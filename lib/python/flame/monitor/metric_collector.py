@@ -33,6 +33,10 @@ class MetricCollector:
         self.state_dict = dict()
         self.stat_log = defaultdict(list)
 
+        # FX-N36: opt-in; per-process 1 Hz NVML polls saturate the driver lock at n≥100 and stall CUDA init.
+        if os.environ.get("FLAME_STAT_THREADS") != "1":
+            return
+
         # CPU monitoring
         cpu_thread = threading.Thread(target=self.gather_cpu_stats)
         cpu_thread.daemon = True

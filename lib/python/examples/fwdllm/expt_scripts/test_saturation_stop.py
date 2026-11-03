@@ -28,6 +28,9 @@ from examples.fwdllm.expts.saturation_stop import (  # noqa: E402
 
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                     "writeup_figs", "data")
+if not os.path.exists(os.path.join(DATA, "agnews_anchor.json")) and "pytest" in sys.modules:
+    import pytest  # writeup_figs/data is gitignored: only the node that made the figures has it
+    pytest.skip("writeup_figs/data not on this node", allow_module_level=True)
 CADENCE = 150
 # Sized by replay on N1-N3, re-checked out of sample 2026-08-22 (buildplan §5.5).
 EXPECT = {"agnews": (1194, -0.005), "yahoo": (1084, -0.008), "yelp-p": (1179, -0.007)}
@@ -139,6 +142,7 @@ def _base_eval(self, *a, **k):
     return ({"acc": self._next_acc}, None, None)
 
 
+_ORIG = (_BASE._eval_snapshot_model, _BASE.eval_model)  # restored at the end: the patch leaked into later tests
 _BASE._eval_snapshot_model = _base_snapshot
 _BASE.eval_model = _base_eval
 
@@ -258,3 +262,4 @@ assert SAT_STALL_FRAC == 0.003, SAT_STALL_FRAC
 print(f"  constant              : SAT_STALL_FRAC={SAT_STALL_FRAC} "
       f"(sized on 11 curves, P4.17; plateau 0.002-0.004)")
 print("\n  ALL CHECKS PASS")
+_BASE._eval_snapshot_model, _BASE.eval_model = _ORIG

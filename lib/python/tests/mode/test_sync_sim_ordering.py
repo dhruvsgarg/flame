@@ -459,7 +459,7 @@ class TestStaleRejectRecordsPropsIntegration:
             def set_end_property(self, end, key, val):
                 self._props[end][key] = val
 
-            def recv_fifo(self, end_ids, first_k=0, timeout=None):
+            def recv_fifo(self, end_ids, first_k=0, timeout=None, deadline=None):
                 # Deliver one STALE update (version 7 < round 11) exactly once.
                 if not self._delivered and "slow" in set(end_ids):
                     self._delivered = True
@@ -526,6 +526,7 @@ class TestStaleRejectRecordsPropsIntegration:
         agg.cache = {}
         agg._updates_recevied = {}
         agg._oort_sent_version_ts = {"slow": {7: sent_ts}}
+        agg.agg_start_time_ts = sent_ts.timestamp()
         return agg, chan, sel
 
     def test_stale_reject_records_speed_and_utility_but_not_aggregated(self):
@@ -544,6 +545,48 @@ class TestStaleRejectRecordsPropsIntegration:
         # and the trainer was cleaned out of the in-flight set.
         assert agg.cache == {}
         assert "slow" not in sel.selected_ends
+
+
+class TestAllStaleRoundFreesSlotsAndKeepsVersion(TestStaleRejectRecordsPropsIntegration):
+    """FX-D10 (P3 oort_star 0397): every consumed update stale-rejected -> optimizer returns
+    None; the slot must still be freed and the model version must not advance."""
+
+    def test_slot_freed_and_round_not_committed(self, monkeypatch):
+        import flame.mode.horizontal.oort.top_aggregator as oort_mod
+        monkeypatch.setattr(oort_mod.time, "sleep", lambda s: None)
+        agg, chan, sel = self._build_agg()
+        agg.optimizer.do = lambda weights, cache, total=0: None if not cache else weights
+        agg._aggregate_weights("tag")
+        assert "slow" not in sel.selected_ends
+        assert agg._round_committed is False
+
+    def test_empty_cache_not_committed_when_optimizer_returns_weights(self, monkeypatch):
+        """FX-D10: refl returns base weights on an empty cache; that is still no commit."""
+        import flame.mode.horizontal.oort.top_aggregator as oort_mod
+        monkeypatch.setattr(oort_mod.time, "sleep", lambda s: None)
+        agg, chan, sel = self._build_agg()  # optimizer.do returns weights unconditionally
+        agg._aggregate_weights("tag")
+        assert "slow" not in sel.selected_ends
+        assert agg._round_committed is False
+
+
+class TestRoundAdvancesOnlyOnCommit:
+    def _agg(self, committed):
+        from types import SimpleNamespace
+        a = _ConcreteSyncAgg.__new__(_ConcreteSyncAgg)
+        a._round, a._rounds, a.simulated, a._work_done = 4, 100, False, False
+        a.config = SimpleNamespace(hyperparameters=SimpleNamespace(max_experiment_runtime_s=None))
+        a.cm = SimpleNamespace(get_by_tag=lambda t: None)
+        a.dist_tag = "d"
+        if committed is not None:
+            a._round_committed = committed
+        return a
+
+    @pytest.mark.parametrize("committed,want", [(True, 5), (False, 4), (None, 5)])
+    def test_increment(self, committed, want):
+        a = self._agg(committed)
+        a.increment_round()
+        assert a._round == want
 
 
 # --- U6 real barrier-anchored visibility lag (feddance/fedavg sync barrier) ----

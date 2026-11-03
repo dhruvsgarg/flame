@@ -602,7 +602,7 @@ class TestClockJumpClamp:
         channel = FakeChannel(inflight=set(), arrival_order=[])
         msg, (end, _) = agg._sim_recv_min(channel, [])
         assert end == "A"                       # earliest sct still commits first
-        assert agg._vclock.now == 10.0          # S.exp(8) + slack(2), NOT 100
+        assert agg._vclock.now == 8.0           # S.exp(8) + slack(0, FX-D23), NOT 100
 
     def test_disabled_clamp_laps_to_committed_sct(self):
         agg = _make_agg()
@@ -614,6 +614,17 @@ class TestClockJumpClamp:
         msg, (end, _) = agg._sim_recv_min(channel, [])
         assert end == "A"
         assert agg._vclock.now == 100.0         # old behavior: jumps to sct, laps S
+
+    def test_arrived_update_clamps_on_its_sct_not_its_estimate(self):
+        # FX-D23: exp = send + D omits the completion leg. Once B has arrived its sct is exact, so it must not
+        # pin A's commit below A's own sct (sim U6 went negative, gs syn_0b fedbuff, pool_fixB_verify_s2).
+        agg = _make_agg()
+        agg._sim_clock_jump_clamp = True
+        agg._sim_inflight_expected = {"A": 2.7, "B": 2.9}  # leg 0.3 → true scts 3.0 / 3.2
+        agg._sim_known_delay_s = {"A": 2.7, "B": 2.9}
+        channel = FakeChannel(inflight={"A", "B"}, arrival_order=[("A", 3.0), ("B", 3.2)])
+        msg, (end, _) = agg._sim_recv_min(channel, ["A", "B"])
+        assert end == "A" and agg._vclock.now == 3.0
 
     def test_clamp_never_advances_backwards(self):
         # No in-flight FUTURE (all exp <= vclock): clamp is inert, clock advances
@@ -646,3 +657,39 @@ class TestExpectedCompletionLowerBound:
         assert "fast" in agg._sim_known_delay_s
         assert "NEW" not in agg._sim_known_delay_s
         assert agg._sim_known_delay_s.get("NEW") is None
+
+
+@pytest.mark.parametrize("keep", [True, False])
+def test_abandon_wake_keeps_buffered_slot(keep):
+    # FX-D137 (PR29 G2 cifar fedbuff mobiperf): an abandon wake left 2 buffered ends RECVD; the selector freed their slots.
+    from types import SimpleNamespace
+    from flame.end import KEY_END_STATE, VAL_END_STATE_RECVD
+    agg = _make_agg()
+    agg.config = SimpleNamespace(hyperparameters=SimpleNamespace(max_experiment_runtime_s=None))
+    agg._sim_keep_slots_on_wake = keep
+    agg._next_abandon_ts = lambda ch: 95.0
+    channel = FakeChannel(inflight={"A"}, arrival_order=[])
+    agg._sim_buffer.add("A", 103.0, ({MessageType.SIM_COMPLETION_TS: 103.0}, ("A", None)))
+    channel._ends["A"].set_property(KEY_END_STATE, VAL_END_STATE_RECVD)  # as recv_fifo leaves it
+    msg, _ = agg._sim_recv_min(channel, [])
+    assert msg is None and agg._vclock.now == pytest.approx(95.0)
+    assert (channel._ends["A"].get_property(KEY_END_STATE) == VAL_END_STATE_RECVD) is not keep
+
+
+@pytest.mark.parametrize("gate", [True, False])
+def test_gate_waits_for_evicted_in_transit_update(gate):
+    """FX-N160: an evicted end's update (slot-only pending_withheld, no payload yet) due before the buffered min is
+    drained before that min commits; else the clock laps its delivery (EV16 commit_late)."""
+    agg = _make_agg()
+    agg._sim_gate_evicted = gate
+    agg.simulated = True
+    agg.pending_withheld = {"EV": 3.0}
+    agg._sim_withheld_payload = {}
+    agg._sim_buffer.add(
+        "A", 10.0,
+        ({MessageType.WEIGHTS: "w_A", MessageType.SIM_COMPLETION_TS: 10.0}, ("A", None)),
+    )
+    channel = FakeChannel(inflight={"A", "EV"}, arrival_order=[("EV", 12.0)])
+    msg, (end, _) = agg._sim_recv_min(channel, [])
+    assert end == "A"
+    assert agg._sim_buffer.has("EV") == gate

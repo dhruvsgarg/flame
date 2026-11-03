@@ -23,6 +23,8 @@ SecAgg algorithm is not the scope of this implementation.
 """
 import logging
 import math
+import statistics
+from collections import deque
 
 import numpy as np
 from diskcache import Cache
@@ -30,7 +32,9 @@ from diskcache import Cache
 from ..common.typing import ModelWeights
 from ..common.util import MLFramework, get_ml_framework_in_use, valid_frameworks
 from .abstract import AbstractOptimizer
+from .bn_buffers import clamp_running_var, is_bn_stat
 from .regularizer.default import Regularizer
+from .. import telemetry
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +47,17 @@ class FedBuff(AbstractOptimizer):
         super().__init__(**kwargs)
 
         self.agg_goal_weights = None
+        self.clamp_running_var = str(kwargs.get("clamp_running_var", True)).lower() == "true"  # FX-N64
+        # FX-D61: BN stats = mean of absolute stats (BN at the update's version + delta), outside rate and server lr.
+        self.bn_absolute_mean = str(kwargs.get("bn_absolute_mean", True)).lower() == "true"
+        self._bn_hist, self._bn_sum, self._bn_n, self._version = {}, {}, 0, None
+        self._u_sum, self._u_n = 0.0, 0  # FX-N109 I7: cycle utility sum / count for rate type "norm"
+        # FX-D232: clip an update's norm to norm_clip x the median of the last 200 (0 = off); FX-T82's lone 241 vs 0.03 step.
+        self.norm_clip = float(kwargs.get("norm_clip", 0) or 0)
+        self._norms = deque(maxlen=200)
+        # F46 S4: server lr x the aggregator's loss phase (flame/selector/loss_phase.py); 1.0 = off
+        self.phase_step = str(kwargs.get("phase_step", False)).lower() == "true"
+        self.step_scale = 1.0
 
         ml_framework_in_use = get_ml_framework_in_use()
         if ml_framework_in_use == MLFramework.PYTORCH:
@@ -59,25 +74,11 @@ class FedBuff(AbstractOptimizer):
 
         self.regularizer = Regularizer()
 
-        # Set learning rate differently if asyncOORT selector is used
+        # FX-D97: server lr is config (baselines.yaml, datasets.yaml).
         try:
-            self.use_oort_lr = kwargs["use_oort_lr"]
+            self.learning_rate = float(kwargs["learning_rate"])
         except KeyError:
-            raise KeyError("Not specified wether to use oort lr or not in config")
-
-        # Set learning rate differently for dataset used Current
-        # options: {"cifar-10", "google-speech"}
-        try:
-            self.dataset_name = kwargs["dataset_name"]
-        except KeyError:
-            raise KeyError("Dataset name not specified in the config")
-
-        # Explicit learning rate, independent of dataset_name. When set,
-        # this wins over the dataset_name lookup table below -- lets each
-        # baseline declare its own rate instead of relying on fedbuff's
-        # hardcoded cifar-10/google-speech table (which has no entry for
-        # other examples, e.g. fwdllm/fluxtune).
-        self.learning_rate = kwargs.get("learning_rate", None)
+            raise KeyError("fedbuff optimizer needs an explicit learning_rate (S5)")
 
         # Set aggregation rate type between old (just staleness) and
         # new (tradeoff staleness and stat utility) Current options:
@@ -199,14 +200,44 @@ class FedBuff(AbstractOptimizer):
                     beta_type="polynomial_upshift",
                 )
 
+            elif self.agg_rate_conf["type"] == "norm":
+                # FX-N109 I7: u_i/sqrt(1+s); scale_add divides by the cycle's mean u
+                u = max(float(tres.stat_utility or 0.0), 0.0)
+                self._u_sum, self._u_n = self._u_sum + u, self._u_n + 1
+                rate = u / math.sqrt(1 + version - tres.version)
+
+            elif self.agg_rate_conf["type"] == "value":
+                # C5: update value (samples^beta, PR40a) x staleness (1+s)^-a; scale_add divides by the cycle's mean
+                u = float(tres.count or 0) ** float(self.agg_rate_conf.get("beta", 0.65))
+                u /= (1 + version - tres.version) ** float(self.agg_rate_conf.get("a", 0.5))
+                self._u_sum, self._u_n = self._u_sum + u, self._u_n + 1
+                rate = u
+
             logger.info(
                 f"agg ver: {version}, trainer ver: {tres.version}, "
                 f"trainer stat_utility: {tres.stat_utility}, rate: {rate}, "
                 f"with agg_rate_type: {self.agg_rate_conf}"
             )
+            self._version = version
+            self._bn_base = self._bn_hist.get(tres.version)
+            if self.norm_clip > 0:
+                self._clip_norm(tres, version)
             self.aggregate_fn(tres, rate)
 
         return self.agg_goal_weights
+
+    def _clip_norm(self, tres, version):
+        """FX-D232: scale a delta whose L2 (BN stats excluded) exceeds norm_clip x the running median; needs 10 norms first."""
+        if not isinstance(tres.weights, dict):
+            return
+        norm = math.sqrt(sum(float(v.double().pow(2).sum()) for k, v in tres.weights.items()
+                             if v.is_floating_point() and not is_bn_stat(k)))
+        med = statistics.median(self._norms) if len(self._norms) >= 10 else None
+        self._norms.append(norm)
+        if med and norm > self.norm_clip * med:
+            scale = self.norm_clip * med / norm
+            tres.weights = {k: v if is_bn_stat(k) or not v.is_floating_point() else v * scale for k, v in tres.weights.items()}
+            telemetry.emit("update_clipped", version=version, trainer_version=tres.version, norm=norm, median=med, scale=scale)
 
     def scale_add_agg_weights(
         self, base_weights: ModelWeights, agg_goal_weights: ModelWeights, agg_goal: int
@@ -231,60 +262,44 @@ class FedBuff(AbstractOptimizer):
     ) -> ModelWeights:
         logger.debug(f"base_weights.keys(): {base_weights.keys()}")
 
+        learning_rate = self.learning_rate * self.step_scale
+        if self._u_n:  # rate "norm" / "value": divide by the cycle's mean weight
+            learning_rate = learning_rate * self._u_n / self._u_sum if self._u_sum > 0 else 0.0
+            self._u_sum, self._u_n = 0.0, 0
+        bn = self.bn_absolute_mean and self._version is not None
+        if bn:
+            self._bn_hist.setdefault(self._version, self._bn_copy(base_weights))
         for k in base_weights.keys():
-            # agg_goal_weights are already adjusted with rate Using
-            # hardcoded learning_rate for now, will pass as an
-            # argument later TODO: (DG) Hyper-parameters for AsyncOORT
-            # need tuning? Which all hyper-parameters apart from LR
-            # need to be tuned?
-            if self.learning_rate is not None:
-                learning_rate = self.learning_rate
-            elif self.use_oort_lr == "False":
-                # for fedbuff asyncfl
-                if self.dataset_name == "cifar-10":
-                    learning_rate = 40.9  # Used with CIFAR-10
-                elif self.dataset_name == "google-speech":
-                    learning_rate = 0.075  # Used with Google speech
-                else:
-                    learning_rate = 1.0
-                    logger.warning(
-                        f"Dataset not specified. using default learning "
-                        f"rate of {learning_rate} "
-                        f"for FedBuff optimizer"
-                    )
-                logger.debug(
-                    f"Dataset was {self.dataset_name}. using learning "
-                    f"rate of {learning_rate} "
-                    f"for FedBuff optimizer"
-                )
-            elif self.use_oort_lr == "True":
-                # for asyncOORT asyncfl
-                if self.dataset_name == "cifar-10":
-                    learning_rate = 0.3  # Used with CIFAR-10
-                elif self.dataset_name == "google-speech":
-                    learning_rate = 0.065  # Used with Google speech
-                else:
-                    learning_rate = 1.0
-                    logger.warning(
-                        f"Dataset not specified. using default learning "
-                        f"rate of {learning_rate} "
-                        f"for FedBuff optimizer"
-                    )
-                # logger.debug(f"Dataset was {self.dataset_name}. using learning "
-                #              f"rate of {learning_rate} "
-                #              f"for FedBuff optimizer")
+            if bn and is_bn_stat(k):
+                if self._bn_n:
+                    base_weights[k] = (self._bn_sum[k] / self._bn_n).to(dtype=base_weights[k].dtype)
+                continue
             base_weights[k] = (base_weights[k]) + (
                 learning_rate * ((agg_goal_weights[k] / agg_goal))
             )
+        if bn:  # result = global at version + 1
+            self._bn_hist[self._version + 1] = self._bn_copy(base_weights)
+            for v in [v for v in self._bn_hist if v < self._version - 63]:
+                del self._bn_hist[v]
+        self._bn_sum, self._bn_n = {}, 0
+        if self.clamp_running_var and clamp_running_var(base_weights):
+            logger.warning("[FEDBUFF_BN] negative running_var clamped to 0 (FX-N64)")
+        if base_weights and not getattr(self, "_server_lr_logged", False):  # FX-N15: the server lr in force, once
+            logger.info(f"[SERVER_LR] fedbuff server lr={learning_rate} from config learning_rate, agg_goal={agg_goal}")
+            self._server_lr_logged = True
         return base_weights
 
     def _scale_add_agg_weights_tensorflow(
         self, base_weights: ModelWeights, agg_goal_weights: ModelWeights, agg_goal: int
     ) -> ModelWeights:
-        learning_rate = self.learning_rate if self.learning_rate is not None else 1.0
+        learning_rate = self.learning_rate
         for idx in range(len(base_weights)):
             base_weights[idx] += learning_rate * (agg_goal_weights[idx] / agg_goal)
         return base_weights
+
+    @staticmethod
+    def _bn_copy(weights):
+        return {k: v.detach().clone() for k, v in weights.items() if is_bn_stat(k)}
 
     def _aggregate_pytorch(self, tres, rate):
         logger.debug("calling _aggregate_pytorch")
@@ -292,7 +307,15 @@ class FedBuff(AbstractOptimizer):
         if self.is_agg_weights_none:
             self.agg_goal_weights = {}
 
+        base = getattr(self, "_bn_base", None) if self.bn_absolute_mean else None
+        if base is not None:  # a version older than the ring adds nothing to the BN mean
+            self._bn_n += 1
         for k, v in tres.weights.items():
+            if self.bn_absolute_mean and is_bn_stat(k):
+                if base is not None:
+                    a = base[k].double() + v.double()
+                    self._bn_sum[k] = a if k not in self._bn_sum else self._bn_sum[k] + a
+                v = v * 0  # keeps the key in agg_goal_weights; scale_add sets the mean
             tmp = v * rate
             # tmp.dtype is always float32 or double as rate is float
             # if v.dtype is integer (int32 or int64), there is type

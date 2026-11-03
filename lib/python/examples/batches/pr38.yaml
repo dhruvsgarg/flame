@@ -1,0 +1,8 @@
+# PR38 (FELIX Next steps): PR37's G3 cells on the fix-bundle key + one G3C real per syn_0 / lin cell. `dispatch.py batches/pr38.yaml`
+name: pr38
+common: "--lease-from-telemetry --gpu-cpus-per-trainer 0.1"
+stages:
+  - {id: A, args: "--tier G3 --datasets google_speech"}
+  - {id: B, args: "--tier G3 --datasets cifar10"}
+  - {id: RA, args: "--tier G3C --datasets google_speech --traces syn_0"}
+  - {id: RB, args: "--tier G3C --datasets cifar10 --traces syn_0"}

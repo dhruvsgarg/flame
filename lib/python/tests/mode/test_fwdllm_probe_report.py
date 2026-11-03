@@ -106,9 +106,10 @@ class TestEvalModePromoted:
         return src[i:i + 400]
 
     def test_trainer_entrypoint_defaults_on(self):
+        # Entry-point default lives in the shared args builder since #82.
         chunk = self._default_at(
-            _FWDLLM / "trainer" / "main.py", '"jvp_eval_mode": getattr(')
-        assert 'jvp_eval_mode", True)' in chunk
+            _FWDLLM / "trainer" / "model_args_builder.py", '"jvp_eval_mode":')
+        assert chunk.startswith('"jvp_eval_mode": True,')
 
     def test_trainer_class_defaults_on(self):
         chunk = self._default_at(

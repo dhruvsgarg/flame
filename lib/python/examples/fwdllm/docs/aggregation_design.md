@@ -1,5 +1,7 @@
 # FluxTune aggregation (C3) — design starter
 
+> **DEPRECATED — reference only.** The single source of truth is [ROBUST_FL_READINESS.md](../../_metadata/ROBUST_FL_READINESS.md) → [FLUXTUNE_READINESS.md](../../_metadata/FLUXTUNE_READINESS.md). This file only gets trimmed from here on as its content moves there; don't add to it.
+
 **What this is.** A starter design doc for FluxTune's **intelligent (gradient-aware) aggregation**
 contribution (C3): (1) the async-FL aggregation regime *today* — FedBuff → FeLiX → current FluxTune, with
 code anchors; (2) the **hypothesis** for why the current rule is probably wrong for FluxTune; (3) the

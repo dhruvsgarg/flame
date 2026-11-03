@@ -1,0 +1,196 @@
+#!/usr/bin/env python3
+"""FX-D23: profile the sim's non-compute charges from REAL legs into a `sim_charge_registry` YAML.
+
+Per aggregator stack (asyncfl | oort_sync | fedavg, from baselines.yaml), from each real leg's aggregator log:
+  completion_leg   = upload per update: [LAG_DECOMP] mqtt_lag + queue_wait
+  download_leg     = download per update: [LAG_DECOMP] agg_to_trainer (sim charges it only without FX-D108's measured lag)
+  dispatch_latency = commit -> next send: sync stacks = last update of version v -> [DISTRIBUTE_TIMING] round v+1;
+                     asyncfl = [DISTRIBUTE_TIMING] - the latest update arrival before it
+  gate_release     = FX-D163: a send-gated update's flip -> send (trainer telemetry) + its mqtt_lag + queue_wait
+  send_prep        = FX-D191: post_wait (D end -> send) minus the run's median trainer pre/post-train time, which sim measures
+  download_by_rank = FX-D191: sync stacks: median agg_to_trainer at each fan-out rank (a version's lags sorted = send order)
+The launcher (debug_run.sh) applies them to every baseline of that stack. Only this script writes the numbers.
+
+Usage: profile_felix_charges.py --dataset D --harness H --out sim_charge_profiles/<H>_<D>.yaml <pool | *_real dir> ...
+       --only gate_release merges that label (own `_meta.gate_release` provenance) into an existing --out: it needs
+       syn_50_3st/mobiperf reals, the other labels syn_0 CHG reals.
+"""
+import argparse
+import glob
+import json
+import os
+import re
+import socket
+import statistics as st
+import subprocess
+from collections import defaultdict
+from datetime import date, datetime
+
+import yaml
+
+LAG_KEYS = ("mqtt_lag_s", "queue_wait_s")  # post_wait: sim measures trainer overhead itself (C13)
+DOWNLOAD_KEY = "agg_to_trainer_s"  # FX-D116: apart, so a measured delivery lag never charges it twice
+BASELINES = os.path.join(os.path.dirname(__file__), "..", "_metadata", "baselines.yaml")
+
+
+def _ts(line):
+    return datetime.strptime(line[:23], "%Y-%m-%d %H:%M:%S,%f").timestamp()
+
+
+def stack_of(baseline: str) -> str:
+    """The aggregator code path (asyncfl | oort_sync | fedavg): each pays its own ingest/commit cost."""
+    main = yaml.safe_load(open(BASELINES))["baselines"][baseline]["example"]["aggregator_main"]
+    return os.path.basename(main)[len("main_"):-len("_agg.py")]
+
+
+def leg_samples(log: str, stack: str):
+    """(completion_leg, dispatch_latency, download_leg, post_wait, {version: downloads}) from one real aggregator log."""
+    legs, lat, down, post, by_version = [], [], [], [], defaultdict(list)
+    last_by_version, dist_by_round, last_recv = {}, {}, None
+    for line in open(log, errors="ignore"):
+        if "[LAG_DECOMP]" in line:
+            vals = [re.search(k + r"=(-?[0-9.]+)", line) for k in LAG_KEYS]
+            if all(vals):
+                legs.append(sum(float(v.group(1)) for v in vals))
+            d = re.search(DOWNLOAD_KEY + r"=(-?[0-9.]+)", line)
+            m = re.search(r"version=(\d+)", line)
+            if d:
+                down.append(float(d.group(1)))
+                if m:
+                    by_version[int(m.group(1))].append(float(d.group(1)))
+            pw = re.search(r"post_wait_s=(-?[0-9.]+)", line)
+            if pw:
+                post.append(float(pw.group(1)))
+            if m:
+                last_by_version[int(m.group(1))] = _ts(line)
+            last_recv = _ts(line)
+        elif "[DISTRIBUTE_TIMING]" in line:
+            m = re.search(r"round=(\d+)", line)
+            if stack == "asyncfl" and last_recv is not None:
+                lat.append(_ts(line) - last_recv)
+                last_recv = None
+            elif m:
+                dist_by_round.setdefault(int(m.group(1)), _ts(line))
+    if stack != "asyncfl":
+        lat = [dist_by_round[v + 1] - t for v, t in last_by_version.items()
+               if v + 1 in dist_by_round and dist_by_round[v + 1] > t]
+    return legs, lat, down, post, by_version
+
+
+def trainer_overhead_median(run: str):
+    """Median real pre+post-train time of train tasks (the part of post_wait sim already measures, C13)."""
+    xs = []
+    for f in glob.glob(f"{run}/telemetry/trainer_*.jsonl"):
+        for line in open(f):
+            if '"trainer_round"' in line:
+                e = json.loads(line)
+                if e.get("task_to_perform") == "train" and e.get("trainer_overhead_s") is not None:
+                    xs.append(e["trainer_overhead_s"])
+    return st.median(xs) if xs else None
+
+
+def rank_entry(groups: list):
+    """Per-rank medians over versions that fanned out to >= 2 ends; ranks with < 20 samples are dropped."""
+    ranks = defaultdict(list)
+    for g in groups:
+        if len(g) >= 2:
+            for i, x in enumerate(sorted(g)):
+                ranks[i].append(x)
+    meds = [round(st.median(ranks[i]), 4) for i in sorted(ranks) if len(ranks[i]) >= 20]
+    return {"ranks_s": meds, "n": sum(len(v) for v in ranks.values()), "charge": True} if meds else None
+
+
+def gate_samples(run: str, log: str) -> list:
+    """FX-D163: per send-gated update, flip -> aggregator processing (s): trainer flip->send + [LAG_DECOMP] upload."""
+    up = defaultdict(list)  # end -> [(log ts, upload)]; a stale delivery's `version` is the commit's, so match by time
+    for line in open(log, errors="ignore"):
+        if "[LAG_DECOMP]" in line:
+            m = re.search(r"end=(\S+) ", line)
+            vals = [re.search(k + r"=(-?[0-9.]+)", line) for k in LAG_KEYS]
+            if m and all(vals):
+                up[m.group(1)].append((_ts(line), sum(float(v.group(1)) for v in vals)))
+    out = []
+    for f in glob.glob(f"{run}/telemetry/trainer_*.jsonl"):
+        flips, sends = [], []
+        for line in open(f):
+            e = json.loads(line)
+            if e.get("event") == "avail_change" and str(e.get("new_state", "")).startswith("AVL"):
+                flips.append(e["ts"])
+            elif e.get("event") == "task_send" and (e.get("send_gate_wait_s") or 0) > 0.5:
+                sends.append(e)
+        for e in sends:
+            flip = max((t for t in flips if t <= e["wall_send_ts"]), default=None)
+            leg = next((u for t, u in up.get(e.get("trainer_id"), []) if t >= e["wall_send_ts"]), None)
+            if flip is not None and leg is not None:
+                out.append(e["wall_send_ts"] - flip + leg)
+    return out
+
+
+def _entry(xs):
+    return {"mean_s": round(st.mean(xs), 4), "p50_s": round(st.median(xs), 4), "n": len(xs), "charge": True}
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--out", required=True)
+    ap.add_argument("--dataset", required=True, choices=("cifar10", "google_speech"))
+    ap.add_argument("--harness", required=True, help="stub | tiny_cpu | gpu (run-name tag _h<harness>_; gpu = none)")
+    ap.add_argument("--only", choices=("gate_release",), help="merge just this label into an existing --out")
+    ap.add_argument("dirs", nargs="+")
+    a = ap.parse_args()
+    runs = set()
+    for p in a.dirs:
+        if p.rstrip("/").endswith("_real"):
+            runs.add(p.rstrip("/"))
+        for f in glob.glob(f"{p}/**/*_grade/summary.tsv", recursive=True):
+            rows = [l.rstrip("\n").split("\t") for l in open(f)]
+            col = rows[0].index("real_dir") if rows and "real_dir" in rows[0] else None
+            runs |= {r[col] for r in rows[1:] if col is not None and len(r) > col and os.path.isdir(r[col])}
+    tag = "" if a.harness == "gpu" else f"_h{a.harness}_"
+    runs = sorted(r for r in runs if ("google_speech" in r) == (a.dataset == "google_speech")
+                  and (tag in r if tag else "_hstub_" not in r and "_htiny_cpu_" not in r))
+    pooled = {"completion_leg": defaultdict(list), "dispatch_latency": defaultdict(list),
+              "download_leg": defaultdict(list), "gate_release": defaultdict(list), "send_prep": defaultdict(list)}
+    groups = defaultdict(list)  # stack -> per-version download lists
+    used = []
+    for r in runs:
+        m = re.search(r"_(felix|fedbuff|oort_star|oort|refl|feddance|oracle)_n\d+", r)
+        logs = glob.glob(f"{r}/*aggregator.log")
+        if not m or not logs:
+            continue
+        stack = stack_of(m.group(1))
+        legs, lat, down, post, by_version = leg_samples(logs[0], stack)
+        ovh = trainer_overhead_median(r)
+        if ovh is not None:
+            pooled["send_prep"][stack] += [max(0.0, x - ovh) for x in post]
+        if stack != "asyncfl":
+            groups[stack] += list(by_version.values())
+        pooled["completion_leg"][stack] += legs
+        pooled["dispatch_latency"][stack] += lat
+        pooled["download_leg"][stack] += down
+        gates = gate_samples(r, logs[0])
+        pooled["gate_release"][stack] += gates
+        if not a.only or gates:
+            used.append(os.path.basename(r))
+    out = {label: {s: _entry(xs) for s, xs in by.items() if xs} for label, by in pooled.items()}
+    out["download_by_rank"] = {s: e for s, g in groups.items() if (e := rank_entry(g))}
+    commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
+    meta = {"dataset": a.dataset, "harness": a.harness, "host": socket.gethostname().split(".")[0], "commit": commit,
+            "date": str(date.today()), "tool": "profile_felix_charges.py", "runs": used}
+    if a.only:
+        prev = yaml.safe_load(open(a.out)) or {}
+        prev[a.only] = out[a.only]
+        prev.setdefault("_meta", {})[a.only] = meta
+        out = prev
+    else:
+        out["_meta"] = meta
+    os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
+    yaml.safe_dump(out, open(a.out, "w"), sort_keys=False)
+    for label in ("completion_leg", "dispatch_latency", "download_leg", "gate_release", "send_prep"):
+        print(label, {s: (e["mean_s"], e["n"]) for s, e in out.get(label, {}).items()})
+    print("download_by_rank", {s: e["ranks_s"] for s, e in out.get("download_by_rank", {}).items()})
+    print(f"{len(used)} real legs -> {a.out}")
+
+
+if __name__ == "__main__":
+    main()

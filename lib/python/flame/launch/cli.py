@@ -32,3 +32,25 @@ def load_config_from_argv(default_config: str = "./config.json") -> Config:
             os.unlink(tmp)
 
     return Config(args.config)
+
+
+def exit_after_run(code: int = 0) -> None:
+    """FX-D178: join threads, run atexit hooks, flush, then os._exit (skips native teardown); FLAME_HARD_EXIT=0 reverts."""
+    if os.environ.get("FLAME_HARD_EXIT", "1") == "0":
+        return
+    import atexit
+    import logging
+    import sys
+    import threading
+
+    for t in threading.enumerate():  # as interpreter shutdown: join non-daemon threads first
+        if t is not threading.current_thread() and not t.daemon:
+            t.join()
+    atexit._run_exitfuncs()
+    logging.shutdown()
+    for s in (sys.stdout, sys.stderr):
+        try:
+            s.flush()
+        except Exception:
+            pass
+    os._exit(code)

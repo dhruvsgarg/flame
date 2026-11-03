@@ -95,7 +95,7 @@ class TopAggregator(BaseTopAggregator):
         logger.debug(f"request was sent: {req}")
         msg, _ = control_plane_channel.recv(end_id)
 
-        logger.debug(f"received message = {msg} from {end_id}")
+        logger.debug(f"received message keys={list(msg or ())} from {end_id}")
 
         if not msg:
             return []

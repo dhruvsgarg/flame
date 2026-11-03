@@ -111,6 +111,13 @@ def test_next_avail_vclock_returns_none_at_budget_horizon():
     assert result is None, f"Expected None at budget horizon, got {result}"
 
 
+def test_next_avail_vclock_ignores_due_withheld_entry():
+    """FX-D6: a withheld entry already due (delivery_ts <= now) is not a future wake-up."""
+    h = _Harness({"t1": _RECOVER}, vclock_now=600, budget=1800)
+    h.pending_withheld = {"t2": 600.0}
+    assert h._next_avail_vclock() == 800.0
+
+
 # ---------------------------------------------------------------------------
 # Starvation termination logic — directly test the decision logic
 # ---------------------------------------------------------------------------

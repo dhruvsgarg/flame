@@ -64,6 +64,22 @@ expt_pin_pythonpath() {
   export PYTHONPATH="$repo_root/lib/python${PYTHONPATH:+:$PYTHONPATH}"
 }
 
+# _expt_pids <pattern> -- this user's matching PIDs in this slot's FLAME_RUN_TAG (untagged if unset) (FX-N22).
+_expt_pids() {
+  local pid tag
+  for pid in $(pgrep -u "$(id -u)" -f "$1" 2>/dev/null); do
+    tag="$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | sed -n 's/^FLAME_RUN_TAG=//p')"
+    [ "$tag" = "${FLAME_RUN_TAG:-}" ] && echo "$pid"
+  done
+}
+
+# _expt_pkill TERM|KILL <pattern> -- signal _expt_pids' matches.
+_expt_pkill() {
+  local pids; pids="$(_expt_pids "$2")"
+  [ -n "$pids" ] && kill -"$1" $pids 2>/dev/null
+  return 0
+}
+
 # FL worker process patterns — single source of truth for interrupt teardown and
 # the clean-slate preflight (run orchestrator, trainers, aggregator, watcher).
 EXPT_WORKER_PATS=(
@@ -83,7 +99,7 @@ expt_assert_clean_slate() {
   _ecs_scan() {
     local p pids out=""
     for p in "${EXPT_WORKER_PATS[@]}"; do
-      pids="$(pgrep -u "$uid" -f "$p" 2>/dev/null | tr '\n' ' ')"
+      pids="$(_expt_pids "$p" | tr '\n' ' ')"
       [ -n "$pids" ] && out+="    ${p} -> ${pids}\n"
     done
     printf '%b' "$out"
@@ -95,11 +111,11 @@ expt_assert_clean_slate() {
     if [ "${EXPT_AUTOCLEAN:-0}" = "1" ]; then
       echo "  [$label] EXPT_AUTOCLEAN=1 → killing and re-checking ..." >&2
       # TERM the orchestrator first (lets it tear down its own group), then KILL all.
-      pkill -TERM -u "$uid" -f 'flame.launch.run_experiment' 2>/dev/null || true
+      _expt_pkill TERM 'flame.launch.run_experiment'
       sleep "${EXPT_CLEAN_GRACE_S:-3}"
       local p
       for p in "${EXPT_WORKER_PATS[@]}"; do
-        pkill -9 -u "$uid" -f "$p" 2>/dev/null || true
+        _expt_pkill KILL "$p"
       done
       sleep 2
       dirty="$(_ecs_scan)"
@@ -239,13 +255,13 @@ expt_launch() {
           kill -TERM -"$run_pid" 2>/dev/null || true
           kill -TERM  "$run_pid" 2>/dev/null || true
           [ -n "$watcher_pid" ] && kill -TERM "$watcher_pid" 2>/dev/null
-          pkill -TERM -f converge_watch.py 2>/dev/null || true
+          _expt_pkill TERM converge_watch.py
           sleep "${EXPT_KILL_GRACE_S:-20}"
           kill -KILL -"$run_pid" 2>/dev/null || true
           kill -KILL  "$run_pid" 2>/dev/null || true
           local p
           for p in "${EXPT_WORKER_PATS[@]}"; do
-            pkill -9 -f "$p" 2>/dev/null || true
+            _expt_pkill KILL "$p"
           done
           break
         fi
@@ -275,15 +291,15 @@ expt_launch() {
     # $watcher_pid is the tee of the `converge_watch.py | tee` pipeline, so also
     # kill the poller by name.
     [ -n "$watcher_pid" ] && kill -TERM "$watcher_pid" 2>/dev/null
-    pkill -TERM -f converge_watch.py 2>/dev/null || true
+    _expt_pkill TERM converge_watch.py
     sleep "${EXPT_INT_GRACE_S:-5}"
     kill -KILL -"$run_pid" 2>/dev/null || true
     kill -KILL  "$run_pid" 2>/dev/null || true
-    pkill -9 -f 'flame.launch.run_experiment' 2>/dev/null || true
-    pkill -9 -f 'trainer/forward_training'  2>/dev/null || true
-    pkill -9 -f 'trainer/pytorch/main.py'   2>/dev/null || true
-    pkill -9 -f 'aggregator/pytorch/main_'  2>/dev/null || true
-    pkill -9 -f converge_watch.py           2>/dev/null || true
+    _expt_pkill KILL 'flame.launch.run_experiment'
+    _expt_pkill KILL 'trainer/forward_training'
+    _expt_pkill KILL 'trainer/pytorch/main.py'
+    _expt_pkill KILL 'aggregator/pytorch/main_'
+    _expt_pkill KILL converge_watch.py
     echo "[$(date '+%F %T')] INTERRUPT — teardown complete for '$label'. GPU/RAM freed." >&2
     exit 130
   }
@@ -303,8 +319,8 @@ expt_launch() {
   [ -n "$cj" ] && [ -f "$cj" ] && EXPT_LAST_CONVERGED=1
   [ -n "$sj" ] && [ -f "$sj" ] && EXPT_LAST_STALLED=1
   if [ "$EXPT_LAST_CONVERGED" = "1" ] || [ "$EXPT_LAST_STALLED" = "1" ]; then
-    pkill -9 -f "trainer/forward_training" 2>/dev/null || true
-    pkill -9 -f "aggregator/pytorch/main_" 2>/dev/null || true
+    _expt_pkill KILL "trainer/forward_training"
+    _expt_pkill KILL "aggregator/pytorch/main_"
   fi
 
   # Backstop-watchdog verdict: it already swept EXPT_WORKER_PATS itself, but sweep
@@ -315,7 +331,7 @@ expt_launch() {
     EXPT_LAST_TIMED_OUT=1
     local p
     for p in "${EXPT_WORKER_PATS[@]}"; do
-      pkill -9 -f "$p" 2>/dev/null || true
+      _expt_pkill KILL "$p"
     done
     rm -f "$timeout_marker"
   fi
@@ -341,17 +357,23 @@ expt_assert_run() {
     EXPT_LAST_HEALTH="NO_MARKER"; export EXPT_LAST_HEALTH
     echo "  [$label] NO_MARKER (cannot scope health check)"; return 1
   fi
+  # Parallel slots share $expdir: scan only this slot's run dirs (FX-T28).
+  local -a roots=("$expdir")
+  if [ -n "${FLAME_RUN_DIR_FILE:-}" ] && [ -s "$FLAME_RUN_DIR_FILE" ]; then
+    mapfile -t roots < <(sort -u "$FLAME_RUN_DIR_FILE" | while IFS= read -r d; do [ -d "$d" ] && echo "$d"; done)
+    [ "${#roots[@]}" -gt 0 ] || roots=("$marker.none")
+  fi
   local agg=0 stop=0 wall=0 starv=0 crash=0 nlogs=0 f n
   while IFS= read -r f; do
     n=$(grep -c "agg_round" "$f" 2>/dev/null); agg=$(( agg + ${n:-0} ))
-  done < <(find "$expdir" -name "aggregator_*.jsonl" -newer "$marker" 2>/dev/null)
+  done < <(find "${roots[@]}" -name "aggregator_*.jsonl" -newer "$marker" 2>/dev/null)
   while IFS= read -r f; do
     nlogs=$(( nlogs + 1 ))
     n=$(grep -ic "stopping run" "$f" 2>/dev/null);          stop=$((  stop  + ${n:-0} ))
     n=$(grep -c  "SIM_WALL_CEILING" "$f" 2>/dev/null);       wall=$((  wall  + ${n:-0} ))
     n=$(grep -c  "\[SIM_STARVATION\]" "$f" 2>/dev/null);     starv=$(( starv + ${n:-0} ))
     n=$(grep -cE "Traceback \(most recent call last\)|CUDA error|Segmentation fault" "$f" 2>/dev/null); crash=$(( crash + ${n:-0} ))
-  done < <(find "$expdir" -name "*_aggregator.log" -newer "$marker" 2>/dev/null)
+  done < <(find "${roots[@]}" -name "*_aggregator.log" -newer "$marker" 2>/dev/null)
   # A healthy, fully-run experiment is COMPLETED (a process outcome), not PASS.
   local status="COMPLETED"
   [ "$agg" -eq 0 ]   && status="NO_AGG_ROUNDS"
@@ -374,6 +396,27 @@ expt_assert_run() {
   [ "$agg" -gt 0 ] && [ "$wall" -eq 0 ] && [ "$crash" -eq 0 ]
 }
 
+# Kill every FL worker of this user by name (the last-resort sweep after a group kill).
+_expt_sweep_workers() {
+  _expt_pkill KILL 'flame.launch.run_experiment'
+  _expt_pkill KILL 'trainer/pytorch/main.py'
+  _expt_pkill KILL 'trainer/forward_training'
+  _expt_pkill KILL 'aggregator/pytorch/main_'
+}
+
+# _expt_timed_teardown label pgid grace_s -- TERM the group (its own traps clean up), then KILL + sweep.
+_expt_timed_teardown() {
+  trap - INT TERM
+  echo "" >&2
+  echo "[$(date '+%F %T')] INTERRUPT — tearing down '$1' (pgid=$2) ..." >&2
+  kill -TERM -"$2" 2>/dev/null || true
+  local i
+  for (( i = 0; i < $3; i++ )); do kill -0 -"$2" 2>/dev/null || break; sleep 1; done
+  kill -KILL -"$2" 2>/dev/null || true
+  _expt_sweep_workers
+  echo "[$(date '+%F %T')] INTERRUPT — '$1' torn down." >&2
+}
+
 # expt_timed_run label runtime_s buffer_s shell_log -- cmd... -- run a command in
 # its OWN process group under a wall-clock timeout, killing the whole tree
 # (SIGTERM grace -> SIGKILL) on overrun, then sweeping stragglers so no orphan
@@ -392,6 +435,9 @@ expt_timed_run() {
   "$@" > "$shell_log" 2>&1 &
   local pid=$!
   set +m
+  # Ctrl+C/SIGTERM: the child's own group never sees a terminal signal, so tear it down here.
+  local saved_trap; saved_trap="$(trap -p INT TERM)"
+  trap '_expt_timed_teardown "$label" "$pid" "$grace_s"; exit 130' INT TERM
   local ela kin
   while kill -0 "$pid" 2>/dev/null; do
     sleep 5
@@ -414,10 +460,9 @@ expt_timed_run() {
   printf '\n' >&2
   [ "$timed_out" = "0" ] && wait "$pid" 2>/dev/null
   local rc=$?
+  trap - INT TERM; eval "$saved_trap"
   if [ "$timed_out" = "1" ]; then
-    pkill -9 -f "trainer/pytorch/main.py"    2>/dev/null || true
-    pkill -9 -f "trainer/forward_training"   2>/dev/null || true
-    pkill -9 -f "aggregator/pytorch/main_"   2>/dev/null || true
+    _expt_sweep_workers
     sleep "$settle_s"
     EXPT_LAST_RC=124; return 124
   fi

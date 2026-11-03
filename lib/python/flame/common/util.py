@@ -211,6 +211,12 @@ def weights_to_device(weights, dtype: DeviceType):
     return None
 
 
+def model_device(model):
+    """Device of a torch model's first parameter (None: no parameters / not torch)."""
+    p = next(iter(model.parameters()), None) if hasattr(model, "parameters") else None
+    return p.device if p is not None else None
+
+
 def weights_to_model_device(weights, model):
     """Send model weights to same device as model"""
     framework = get_ml_framework_in_use()
@@ -226,24 +232,27 @@ def weights_to_model_device(weights, model):
     return None
 
 
-def materialize_weights(msg):
-    """Up-path lazy-deserialize for a trainer->aggregator model update.
+def pack_weights(weights) -> bytes:
+    """Model weights -> WEIGHTS_BYTES: the flat tensor codec (FX-N77), or cloudpickle when FLAME_WEIGHT_CODEC=pickle."""
+    from flame.common import tensor_codec  # local import: torch-only module
 
-    Trainers ship a weight update as pre-serialized raw bytes
-    (``MessageType.WEIGHTS_BYTES``) instead of a live tensor, so the aggregator
-    pays the (expensive) tensor reconstruction only for the updates it actually
-    commits — not the surplus/stale ones it discards. (The transport's recv path
-    otherwise eagerly cloudpickle.loads every received tensor, even ones thrown
-    away to overcommitment.) Call this at the aggregation read site to obtain the
-    live weights regardless of which encoding arrived: it converts
-    WEIGHTS_BYTES -> WEIGHTS in place, is a no-op when WEIGHTS is already present
-    (backward compatible + idempotent), and returns msg[WEIGHTS] (or None when
-    the message carries no weights, e.g. an eval-only update).
+    if tensor_codec.enabled():
+        return tensor_codec.encode(weights)
+    return cloudpickle.dumps(weights_to_device(weights, DeviceType.CPU))
+
+
+def materialize_weights(msg, device=None):
+    """Restore a message's weights at their read site: WEIGHTS_BYTES -> WEIGHTS in place, either encoding.
+
+    Senders ship weights as WEIGHTS_BYTES (`pack_weights`) so a receiver decodes only what it uses (an aggregator
+    skips surplus/stale updates). Idempotent and a no-op when WEIGHTS is already present. `device` places flat-codec
+    tensors there with one copy (default CPU); pickled ones keep their pickled device. Returns msg[WEIGHTS] or None.
     """
+    from flame.common import tensor_codec  # local import: torch-only module
     from flame.mode.message import MessageType  # local import: avoid cycle
 
     if MessageType.WEIGHTS not in msg and MessageType.WEIGHTS_BYTES in msg:
-        msg[MessageType.WEIGHTS] = cloudpickle.loads(
-            msg.pop(MessageType.WEIGHTS_BYTES)
-        )
+        blob = msg.pop(MessageType.WEIGHTS_BYTES)
+        msg[MessageType.WEIGHTS] = (tensor_codec.decode(blob, device) if tensor_codec.is_encoded(blob)
+                                    else cloudpickle.loads(blob))
     return msg.get(MessageType.WEIGHTS)

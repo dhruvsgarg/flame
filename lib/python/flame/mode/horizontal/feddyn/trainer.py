@@ -20,6 +20,7 @@ import logging
 from flame.channel import VAL_CH_STATE_RECV, VAL_CH_STATE_SEND
 from flame.common.constants import DeviceType, TrainState
 from flame.common.util import (
+    materialize_weights,
     MLFramework,
     get_ml_framework_in_use,
     weights_to_device,
@@ -73,6 +74,7 @@ class Trainer(BaseTrainer):
         end = channel.one_end(VAL_CH_STATE_RECV)
         msg, _ = channel.recv(end)
 
+        materialize_weights(msg)  # FX-N77: WEIGHTS_BYTES from pack_weights
         if MessageType.WEIGHTS in msg:
             self.weights = weights_to_model_device(msg[MessageType.WEIGHTS], self.model)
             self._update_model()
@@ -144,7 +146,7 @@ class Trainer(BaseTrainer):
         end = channel.one_end(VAL_CH_STATE_SEND)
 
         msg = {MessageType.DATASET_SIZE: self.dataset_size}
-        logger.debug(f"msg data : {msg}")
+        logger.debug(f"msg data : keys={list(msg or ())}")
         channel.send(end, msg)
         logger.debug("sending dataset size done")
 

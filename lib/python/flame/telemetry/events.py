@@ -28,8 +28,9 @@ EVENT_INFLIGHT_RESIDENCE = "inflight_residence"  # per-round in-flight drain acc
 EVENT_UTILITY_BELIEF = "utility_belief"  # believed (at selection) vs actual (at return) client utility
 EVENT_DISPATCH = "dispatch"          # per-dispatch re-dispatch-stagger validation (felix)
 EVENT_WITHHELD_DELIVERY = "withheld_delivery"  # late stale delivery of a send-gated update
-EVENT_ABANDON_TIMEOUT = "abandon_timeout"      # 90s vclock slot-free of a stalled trainer
+EVENT_ABANDON_TIMEOUT = "abandon_timeout"      # task-timeout slot-free of a stalled trainer (FX-D46)
 EVENT_AGG_BELIEF_CHANGE = "agg_belief_change"   # aggregator's belief about a trainer's avail state
+EVENT_CHECKIN = "checkin"            # F42-T1: a check-in protocol step (pooled / rejected / missed / picked)
 EVENT_STEP_TIMING = "step_timing"    # per-function wall duration of a timed compute step
 EVENT_COMM = "comm"                  # one message put on the wire (byte-size accounting)
 EVENT_VERSION_BUMP_CENSUS = "version_bump_census"  # #S1: pool-wide in-flight state at a model_version bump
@@ -38,9 +39,17 @@ EVENT_REDISPATCH_DECOMP = "redispatch_decomp"  # fwdllm round-cadence: commit->n
 EVENT_SLOT_STARVATION = "slot_starvation"  # a freed dispatch slot had fewer eligible candidates than slots
 EVENT_VCLOCK_CHARGE = "vclock_charge"  # every charge_sim_vclock_overhead() call: measured span vs actually-charged
 EVENT_SERVER_UPDATE = "server_update"  # fwdllm: applied-update vs weight norm per commit (I-1 audit)
+EVENT_TASK_DISCARD = "task_discard"  # trainer dropped a request it already answered (FX-D9)
+EVENT_RUN_END = "run_end"  # aggregator stop point: round, vclock (sim), work_done (FX-N31)
+EVENT_TRACE_ORIGIN = "trace_origin"  # real join barrier: trace/stream clock origin (FX-D51)
+EVENT_MODEL_HEALTH = "model_health"  # global model health after a commit (FX-N64)
+EVENT_AGG_TIMING = "agg_timing"  # per-commit wall split: recv wait vs ingest vs commit (FX-N43)
+EVENT_WIRE = "wire"  # one message sent or received at the channel: bytes per peer (FELIX_INSIGHTS I-E1)
 
 KNOWN_EVENTS = frozenset(
     {
+        EVENT_TRACE_ORIGIN,
+        EVENT_MODEL_HEALTH,
         EVENT_RUN_META,
         EVENT_SELECTION,
         EVENT_AGG_EVAL,
@@ -64,6 +73,10 @@ KNOWN_EVENTS = frozenset(
         EVENT_REDISPATCH_DECOMP,
         EVENT_SLOT_STARVATION,
         EVENT_VCLOCK_CHARGE,
+        EVENT_TASK_DISCARD,
+        EVENT_RUN_END,
+        EVENT_AGG_TIMING,
+        EVENT_WIRE,
     }
 )
 
@@ -120,6 +133,27 @@ def build_agg_eval(
     fields = {"round": round_num}
     fields.update(metrics)
     return EVENT_AGG_EVAL, fields
+
+
+def build_model_health(*, round_num: int, weights: dict) -> tuple[str, dict[str, Any]]:
+    """FX-N64: float-weight L2 norm, non-finite count, max |BN buffer|, min running_var (< 0 = NaN at eval)."""
+    import torch
+
+    sq, bad, buf_max, var_min = 0.0, 0, 0.0, float("inf")
+    for k, v in weights.items():
+        if not torch.is_tensor(v) or not v.is_floating_point():
+            continue
+        t = v.detach().float()
+        fin = torch.isfinite(t)
+        bad += int((~fin).sum())
+        t = torch.where(fin, t, torch.zeros_like(t))
+        sq += float((t * t).sum())
+        if "running_" in k and t.numel():
+            buf_max = max(buf_max, float(t.abs().max()))
+            if k.endswith("running_var"):
+                var_min = min(var_min, float(t.min()))
+    return EVENT_MODEL_HEALTH, {"round": round_num, "weight_norm": sq ** 0.5, "nonfinite": bad, "bn_buf_max": buf_max,
+                                                 "bn_var_min": var_min if var_min != float("inf") else None}
 
 
 def build_agg_round(
@@ -859,6 +893,7 @@ def build_withheld_delivery(
     accepted: Optional[bool] = None,
     time_mode: str = "sim",
     actual_commit_ts: Optional[float] = None,
+    task: Optional[str] = None,
 ) -> tuple[str, dict[str, Any]]:
     """A send-gated update committing late (stale) at its ``delivery_ts``.
 
@@ -895,7 +930,29 @@ def build_withheld_delivery(
         fields["accepted"] = accepted
     if actual_commit_ts is not None:
         fields["actual_commit_ts"] = float(actual_commit_ts)
+    if task is not None:
+        fields["task"] = task  # FX-N97: train waits for AVL_TRAIN, eval for AVL_*
     return EVENT_WITHHELD_DELIVERY, fields
+
+
+def build_agg_timing(
+    *,
+    round_num: int,
+    cycle_s: float,
+    recv_wait_s: float,
+    ingest_s: float,
+    commit_s: float,
+    n_updates: int,
+    time_mode: str,
+    vclock_now: Optional[float] = None,
+) -> tuple[str, dict[str, Any]]:
+    """FX-N43: one commit's aggregator wall split; other = cycle minus recv wait, ingest and commit."""
+    other = cycle_s - recv_wait_s - ingest_s - commit_s
+    return EVENT_AGG_TIMING, {
+        "round": round_num, "cycle_s": round(cycle_s, 4), "recv_wait_s": round(recv_wait_s, 4),
+        "ingest_s": round(ingest_s, 4), "commit_s": round(commit_s, 4), "other_s": round(max(0.0, other), 4),
+        "n_updates": n_updates, "time_mode": time_mode, "vclock_now": vclock_now,
+    }
 
 
 def build_abandon_timeout(
@@ -905,11 +962,11 @@ def build_abandon_timeout(
     sim_send_ts: float,
     vclock_now: float,
     time_mode: str = "sim",
-    reason: str = "abandon_90s_vclock",
+    reason: str = "abandon_timeout_vclock",
 ) -> tuple[str, dict[str, Any]]:
     """A stalled in-flight trainer freed by a slot-free trigger.
 
-    ``reason`` distinguishes C.3 90s-vclock abandons from D.1 aware boundary
+    ``reason`` distinguishes C.3 task-timeout abandons from D.1 aware boundary
     evictions. ``vclock_now − sim_send_ts`` is the in-flight age at trigger.
     Backs the ``abandon_timeout`` parity rung, which fails loudly if the
     deadline is measured on the wall instead of the vclock.
@@ -956,3 +1013,8 @@ def build_agg_belief_change(
         "checkpoint": checkpoint,
         "source": source,
     }
+
+
+def build_checkin(*, kind: str, end_id: str, t: float, round_num: int = -1, **fields) -> tuple[str, dict[str, Any]]:
+    """F42-T1 check-in step on the trace clock: pooled, rejected (reconnect_at), missed (unavailable at its reconnect), picked."""
+    return EVENT_CHECKIN, {"kind": kind, "end_id": end_id, "t": float(t), "round": round_num, **fields}

@@ -297,7 +297,7 @@ class Trainer(Role, metaclass=ABCMeta):
 
             msg, _ = channel.recv(end)
 
-            logger.debug(f"end_id: {end}, msg: {msg}")
+            logger.debug(f"end_id: {end}, msg: keys={list(msg or ())}")
             if MessageType.MEMBER_DIGEST not in msg:
                 logger.debug("no member digest found")
                 return False, 0
@@ -382,7 +382,7 @@ class Trainer(Role, metaclass=ABCMeta):
         if self.ring_weights is None:
             logger.debug("Sending arrival message...")
             msg[MessageType.NEW_TRAINER] = True
-        logger.debug(f"member check msg = {msg}")
+        logger.debug(f"member check msg = keys={list(msg or ())}")
         channel.broadcast(msg)
 
         self.total_count = self.dataset_size

@@ -16,6 +16,7 @@
 """Config parser."""
 
 import json
+import os
 import typing as t
 from enum import Enum
 
@@ -56,6 +57,7 @@ class OptimizerType(str, Enum):
     """Define optimizer types."""
 
     FEDAVG = "fedavg"
+    FEDAVG_YOGI = "fedavg_yogi"  # FedAvg + FedScale server YoGi (Oort, FX-N74)
     FEDADAGRAD = "fedadagrad"
     FEDADAM = "fedadam"
     FEDYOGI = "fedyogi"
@@ -145,11 +147,40 @@ class BaseModel(FlameSchema):
 class Hyperparameters(FlameSchema, extra=Extra.allow):
     batch_size: t.Optional[int] = Field(alias="batchSize", default=None)
     learning_rate: t.Optional[float] = Field(alias="learningRate", default=None)
+    # FX-N58: trainer lr decay, off unless a baseline configures it (REFL); unaliased keys were silently ignored.
+    lr_decay_enabled: bool = Field(alias="lrDecayEnabled", default=False)
+    lr_decay_factor: float = Field(alias="lrDecayFactor", default=0.98)
+    lr_decay_epoch: int = Field(alias="lrDecayEpoch", default=10)
+    min_learning_rate: float = Field(alias="minLearningRate", default=1e-4)
+    trainer_optimizer: t.Optional[str] = Field(alias="trainerOptimizer", default=None)  # sgd | adam; None = dataset's
+    # FX-N83: FedScale/Oort client SGD (REFL client.py:71, Oort learner.py:155): momentum 0.9, weight decay 5e-4.
+    trainer_momentum: float = Field(alias="trainerMomentum", default=0.0)
+    trainer_weight_decay: float = Field(alias="trainerWeightDecay", default=0.0)
+    trainer_clip_grad_norm: float = Field(alias="trainerClipGradNorm", default=0.0)  # FX-D126: 0 = off (source Oort's clip is commented out)
+    trainer_deterministic: bool = Field(alias="trainerDeterministic", default=False)  # FX-D149: deterministic cuDNN kernels
+    trainer_update_norms: bool = Field(alias="trainerUpdateNorms", default=False)  # per-batch grad norm + delta L2 telemetry
+    utility_on_receive: bool = Field(alias="utilityOnReceive", default=False)  # FX-N109 I9: utility before training
+    trainer_augment_each_pass: bool = Field(alias="trainerAugmentEachPass", default=True)  # FX-D233/N143: fresh per-batch train augmentation
+    # FX-N119: > 0 = utility from the first ~S training samples' loss (the received model's, no extra pass); 0 = epoch EMA
+    utility_prefix_samples: int = Field(alias="utilityPrefixSamples", default=0)
+    trainer_amp: str = Field(alias="trainerAmp", default="")  # FX-N98: "bf16" = bf16 autocast forward on CUDA; "" = fp32
     weight_decay: t.Optional[float] = Field(alias="weightDecay", default=None)
     rounds: int
     epochs: int
+    # FX-N74: mini-batch iterations per task (FedScale `local_steps`, cycling the local data); None = `epochs` full passes.
+    local_steps: t.Optional[int] = Field(alias="localSteps", default=None)
+    # FX-N116: "" = as configured | "cap" = local_steps capped at an epoch | "split" = compute = beta/(1-beta) x transfer, per client
+    local_work: str = Field(alias="localWork", default="")
+    local_work_beta: float = Field(alias="localWorkBeta", default=0.5)
+    # FedBuff §5: a short last batch scales the step lr by its size / batchSize.
+    lr_batch_normalize: bool = Field(alias="lrBatchNormalize", default=False)
+    # FX-N74: Oort statistical utility form; "fedscale" = sqrt(EMA_0.2 batch mean loss^2, first pass) x trained samples
+    # (Oort learner.py:296-312, REFL client.py:261); "legacy" = first-batch form Felix was built on.
+    stat_utility: str = Field(alias="statUtility", default="legacy")
     aggregation_goal: t.Optional[int] = Field(alias="aggGoal", default=None)
     eval_every_n_rounds: t.Optional[int] = Field(alias="evalEveryNRounds", default=50)
+    # FX-N112: test eval every N s of the leg's clock (sim vclock / real since the join); overrides evalEveryNRounds
+    eval_every_s: t.Optional[float] = Field(alias="evalEverySeconds", default=None)
     eval_goal_factor: t.Optional[float] = Field(alias="evalGoalFactor", default=None)
     # Target-accuracy stopping: stop once test accuracy stays >= target for
     # `stable_evals_above_target` consecutive evals (resets on any dip). The
@@ -159,6 +190,8 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     stable_evals_above_target: t.Optional[int] = Field(
         alias="stableEvalsAboveTarget", default=20
     )
+    # FX-D229: set = stop once the mean of the last `target_window` evals >= target (replaces the consecutive rule).
+    target_window: t.Optional[int] = Field(alias="targetWindow", default=None)
     round_nudge_type: t.Optional[str] = Field(
         alias="roundNudgeType", default="last_train"
     )
@@ -219,9 +252,61 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     sim_completion_leg_s: t.Optional[float] = Field(
         alias="simCompletionLegSeconds", default=0.0
     )
+    # FX-D163: profiled send-gate release (exit + upload) after a flip; sim withheld delivery = flip + this.
+    sim_gate_release_s: t.Optional[float] = Field(
+        alias="simGateReleaseSeconds", default=0.0
+    )
+    # FX-D116: profiled download leg (agg -> trainer), charged only when the measured FX-D108 lag is not.
+    sim_download_leg_s: t.Optional[float] = Field(
+        alias="simDownloadLegSeconds", default=0.0
+    )
+    # FX-D191: real download per fan-out rank (profiled); a sim task charges its rank's, not its own measured lag.
+    sim_download_by_rank: t.Optional[list] = Field(alias="simDownloadByRank", default=None)
+    # FX-D191: real D-end -> send minus its pre/post-train time (weight packing + send path), added to sim sct.
+    sim_send_prep_s: t.Optional[float] = Field(alias="simSendPrepSeconds", default=0.0)
+    # C13: sim adds each update's measured trainer pre/post-train time to its duration.
+    sim_charge_trainer_overhead: t.Optional[bool] = Field(
+        alias="simChargeTrainerOverhead", default=True
+    )
+    # FX-D111: drop an update whose weights or utility are NaN/inf (failed client task); false = revert.
+    reject_nonfinite_updates: t.Optional[bool] = Field(
+        alias="rejectNonfiniteUpdates", default=True
+    )
+    # FX-D118: real wait-K stops receiving once every awaited end replied; false = revert.
+    real_recv_until_awaited: t.Optional[bool] = Field(
+        alias="realRecvUntilAwaited", default=True
+    )
+    # FX-D156: sim sync barrier ingests a due stale withheld delivery past K instead of carrying it; false = revert.
+    sim_ingest_stale_past_k: t.Optional[bool] = Field(
+        alias="simIngestStalePastK", default=True
+    )
+    # FX-D155: real wait-K recv returns at once when a pick is past its timeout but unabandoned; false = revert.
+    real_recv_returns_overdue: t.Optional[bool] = Field(
+        alias="realRecvReturnsOverdue", default=True
+    )
+    # FX-D123: real selector speed = sim's duration formula (no weight staging); false = revert.
+    real_intrinsic_client_duration: t.Optional[bool] = Field(
+        alias="realIntrinsicClientDuration", default=True
+    )
+    # FX-D160: sim reads the data stream at send + delivery lag, as real; false = revert.
+    sim_stream_at_train_start: t.Optional[bool] = Field(
+        alias="simStreamAtTrainStart", default=True
+    )
+    # C13 (FX-D108): sim starts each recipient after its measured fan-out delivery lag, as real does.
+    sim_charge_delivery_lag: t.Optional[bool] = Field(
+        alias="simChargeDeliveryLag", default=True
+    )
+    # Sim dispatch latency (commit -> next send: select, ingest, send), profiled per stack (FX-D23).
+    sim_dispatch_latency_s: t.Optional[float] = Field(
+        alias="simDispatchLatencySeconds", default=0.0
+    )
     # Sim POST-commit re-dispatch cooldown; spaces completions without inflating staleness.
     sim_redispatch_gap_s: t.Optional[float] = Field(
         alias="simRedispatchGapSeconds", default=0.0
+    )
+    # Sim gate: hold a commit for an in-flight end expected earlier by more than this (None = stack default; FX-D23).
+    sim_order_slack_s: t.Optional[float] = Field(
+        alias="simOrderSlackSeconds", default=None
     )
     # Sim async-stack: cap each commit's clock advance at the earliest in-flight
     # FUTURE modeled completion (+slack), so a forced far-future straggler commit
@@ -250,6 +335,17 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     sim_sct_ordered_drain: t.Optional[bool] = Field(
         alias="simSctOrderedDrain", default=False
     )
+    # Async sim: first-contact trainers (no known delay) gate commits and hold their slot (FX-D8: on).
+    sim_cold_start_gate: t.Optional[bool] = Field(
+        alias="simColdStartGate", default=True
+    )
+    # Wall seconds a dispatched task may still be computing (cold-start / phantom gates); None = task timeout (asyncfl), 10 (fwdllm).
+    sim_gate_compute_cap_s: t.Optional[float] = Field(
+        alias="simGateComputeCapSeconds", default=None
+    )
+    # FX-D9: same-version re-task only after a timeout: none | fixed (backoff) | exponential (backoff*2**retries).
+    task_retry_policy: t.Optional[str] = Field(alias="taskRetryPolicy", default="none")
+    task_retry_backoff_s: t.Optional[float] = Field(alias="taskRetryBackoffSeconds", default=30.0)
     # Real-only settle sleep before selection (hit 2x/commit). 0 = compute-bound.
     real_distribute_settle_s: t.Optional[float] = Field(
         alias="realDistributeSettleSeconds", default=0.1
@@ -339,6 +435,18 @@ class Hyperparameters(FlameSchema, extra=Extra.allow):
     proactive_inflight_evict: t.Optional[bool] = Field(
         alias="proactiveInflightEvict", default=None
     )
+    # R27 (F42a): how the aggregator learns client state: notify (Felix) | oracle (`*` variants) | none; None = from avail_select_filter.
+    avail_knowledge: t.Optional[str] = Field(alias="availKnowledge", default=None)
+    # F42a sim notify: a flip reaches the aggregator this many seconds late (0 = instant push).
+    notify_latency_s: t.Optional[float] = Field(alias="notifyLatencyS", default=0.0)
+    # F42-T1 check-in (avail_knowledge=checkin): window_frac, jitter [lo, hi], alpha, seed (flame.availability.checkin).
+    checkin: t.Optional[dict] = Field(alias="checkin", default=None)
+    # F42-T1 real trainer: run the check-in client (flame.availability.checkin_client); "prophet" adds REFL's forecast p.
+    checkin_client: t.Optional[str] = Field(alias="checkinClient", default=None)
+    # FX-N37: a sync version commits only at K accepted updates; timed-out picks are replaced mid-round.
+    sync_wait_for_k: t.Optional[bool] = Field(alias="syncWaitForK", default=False)
+    # FX-D148: wait-K versions dispatch to whoever is eligible, not only at c eligible.
+    sync_partial_dispatch: t.Optional[bool] = Field(alias="syncPartialDispatch", default=False)
     # Override directory for availability trace YAMLs. Defaults to
     # examples/_metadata/availability_traces/ when None.
     availability_trace_dir: t.Optional[str] = Field(
@@ -534,5 +642,8 @@ def transform_brokers(raw_brokers_config: dict):
         sort = raw_broker["sort"]
         host = raw_broker["host"]
         sort_to_host[sort] = host
+    # FX-N22: a harness slot's private broker (host[:port]); unset = config value.
+    if os.environ.get("FLAME_MQTT_BROKER") and "mqtt" in sort_to_host:
+        sort_to_host["mqtt"] = os.environ["FLAME_MQTT_BROKER"]
 
     return Broker(sort_to_host=sort_to_host)

@@ -1,0 +1,94 @@
+#!/usr/bin/env python3
+"""Felix readiness score (PARITY C5): baseline x dataset x scenario cells, each green only if every graded pair of that cell
+in the given pools is green (INV/EXACT + EV, `parity_ladder --grade --max-stage 9`; worst pair wins).
+
+  readiness_score.py POOL [POOL ...]          # markdown matrix + score; pass pools oldest first: a later pool's grade of the same pair supersedes
+
+Scenarios: syn_0 (syn_0/0b), syn_20_3st, syn_50_3st, mobiperf (pair tiers T3/G0U/P*), stream_lin / stream_eve (G0T), stream_cpu (P7).
+Not scored: P11 (injected bugs, graded CAUGHT), oracle arms, real-only (*C) and sim-only (G1AS) phases. Speech mobiperf
+Oort cells are n/a (FX-D106); speech stream_cpu is n/a (P7 harness invalid for the real speech model, FX-N86; G0T covers it).
+"""
+import argparse
+import re
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import parity_ladder as pl  # noqa: E402
+
+BASELINES = ("felix", "fedbuff", "refl", "oort", "oort_star", "feddance")
+DATASETS = ("cifar10", "google_speech")
+SCENARIOS = ("syn_0", "syn_20_3st", "syn_50_3st", "mobiperf", "stream_lin", "stream_eve", "stream_cpu")
+TRACE = {"syn_0": "syn_0", "syn_0b": "syn_0", "syn_20_3st": "syn_20_3st", "syn_50_3st": "syn_50_3st", "mobiperf_3st": "mobiperf"}
+MARK = {"green": "✅", "known": "⚠", "red": "❌", None: "·", "n/a": "–"}
+
+
+def scenario(phase: str, trace: str):
+    p = phase[3:] if phase.startswith("gs_") else phase
+    if p.startswith(("P11", "P7o", "G0To", "TSo", "G1AS", "G2S")) or p.startswith(pl.REAL_ONLY):
+        return None
+    if p.startswith("P7"):
+        return "stream_cpu"
+    if p.startswith("G0T"):
+        return "stream_lin" if "_lin_" in p else "stream_eve"
+    if "_lin_" in p:  # G3_lin_syn_0 (PR37)
+        return "stream_lin"
+    return TRACE.get(trace)
+
+
+def score(pools):
+    rank = {"green": 0, "known": 1, "red": 2}
+    pairs = {}  # a later pool's grade of the same pair supersedes an earlier one
+    for root in pools:
+        for c in pl.grade_pool(Path(root), 9):
+            sc = scenario(c.phase, c.trace)
+            if sc is None or c.baseline not in BASELINES:
+                continue
+            if c.status == "red" and any(re.match(r"real (MISSING|EV0)\b", w) for w in c.why.split("; ")):
+                continue  # L18: a dead real leg (no telemetry) is no evidence; the cell's other pairs grade it
+            pairs[(c.baseline, c.dataset, sc, c.phase, c.trace)] = c.status
+    # G3S<i>_ / G0US<i>_<cell> sims vote as one cell (majority red = red, FX-N103), superseding that cell's older-key pair.
+    votes = {}
+    for (b, d, sc, ph, tr), st in pairs.items():
+        if pl.SIM_REP.search(ph):
+            votes.setdefault((b, d, sc, pl.sim_only_target(ph), tr), []).append(st)
+    for (b, d, sc, ph, tr), sts in votes.items():
+        pairs = {k: v for k, v in pairs.items() if not (k[:3] == (b, d, sc) and k[4] == tr
+                                                       and pl.sim_only_target(k[3]) == ph)}
+        pairs[(b, d, sc, ph, tr)] = "red" if 2 * sts.count("red") > len(sts) else ("known" if "known" in sts else "green")
+    cells = {}
+    for (b, d, sc, _, _), st in pairs.items():
+        k = (b, d, sc)
+        if k not in cells or rank[st] > rank[cells[k]]:
+            cells[k] = st
+    for b in ("oort", "oort_star"):
+        cells[(b, "google_speech", "mobiperf")] = "n/a"
+    for b in BASELINES:
+        cells[(b, "google_speech", "stream_cpu")] = "n/a"
+    return cells
+
+
+def render(cells) -> str:
+    out = ["| baseline · dataset | " + " | ".join(SCENARIOS) + " |", "|---" * (len(SCENARIOS) + 1) + "|"]
+    for b in BASELINES:
+        for d in DATASETS:
+            out.append(f"| {b} · {'cifar' if d == 'cifar10' else 'speech'} | "
+                       + " | ".join(MARK[cells.get((b, d, s))] for s in SCENARIOS) + " |")
+    applicable = [k for k in ((b, d, s) for b in BASELINES for d in DATASETS for s in SCENARIOS) if cells.get(k) != "n/a"]
+    green = sum(cells.get(k) == "green" for k in applicable)
+    tested = sum(cells.get(k) in ("green", "known", "red") for k in applicable)
+    per = " · ".join(f"{s} {sum(cells.get((b, d, s)) == 'green' for b in BASELINES for d in DATASETS)}/"
+                     f"{sum(cells.get((b, d, s)) != 'n/a' for b in BASELINES for d in DATASETS)}" for s in SCENARIOS)
+    out += ["", f"**Parity score: {green} / {len(applicable)} green** ({tested} tested, {len(applicable) - tested} untested). {per}"]
+    return "\n".join(out)
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("pools", nargs="+")
+    print(render(score(ap.parse_args(argv).pools)))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

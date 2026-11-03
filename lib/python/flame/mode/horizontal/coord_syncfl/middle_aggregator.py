@@ -72,7 +72,7 @@ class MiddleAggregator(BaseMiddleAggregator):
         logger.debug("sent meta info response")
 
         msg, _ = channel.recv(end)
-        logger.debug(f"received msg = {msg} from {end}")
+        logger.debug(f"received msg keys={list(msg or ())} from {end}")
 
         if MessageType.COORDINATED_ENDS not in msg:
             raise ValueError("no coordinated ends message")

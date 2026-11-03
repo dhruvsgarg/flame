@@ -16,6 +16,7 @@
 
 import logging
 
+from flame.common.util import materialize_weights
 from flame.mode.composer import CloneComposer
 from flame.mode.horizontal.syncfl.middle_aggregator import (
     TAG_AGGREGATE,
@@ -80,7 +81,7 @@ class LeafAggregator(BaseLeafAggregator):
 
         end = channel.one_end()
         msg, _ = channel.recv(end)
-        logger.debug(f"received msg = {msg} from {end}")
+        logger.debug(f"received msg keys={list(msg or ())} from {end}")
 
         if MessageType.COORDINATED_ENDS not in msg:
             raise ValueError("no coordinated ends message")
@@ -140,6 +141,7 @@ class LeafAggregator(BaseLeafAggregator):
 
         msg, _ = channel.recv(self.mid_aggregator_id)
 
+        materialize_weights(msg)  # FX-N77: WEIGHTS_BYTES from pack_weights
         if MessageType.WEIGHTS in msg:
             self.weights = msg[MessageType.WEIGHTS]
 

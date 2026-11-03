@@ -1,4 +1,4 @@
-# Felix smoke test: 10 trainers, homogeneous (alpha=100), syn_20 unavailability.
+# Felix smoke test: 10 trainers, homogeneous (alpha=100), syn_20_3st unavailability.
 # Use this to validate the launcher + baseline merge before the n=300 run.
 #
 # Run:
@@ -7,7 +7,7 @@
 
 experiments:
   - name: felix_n10_alpha100_syn20_smoke
-    description: "Felix smoke (10 trainers, alpha=100, syn_20). Validates baseline merge + launch pipeline."
+    description: "Felix smoke (10 trainers, alpha=100, syn_20_3st). Validates baseline merge + launch pipeline."
 
     baseline: felix
 
@@ -18,7 +18,7 @@ experiments:
         name: cifar10
         dirichlet_alpha: 100.0
       availability:
-        mode: syn_20
+        mode: syn_20_3st
       enable_training_delays: true
       hyperparameters:
         batchSize: 32
@@ -26,7 +26,7 @@ experiments:
       config_overrides:
         hyperparameters:
           client_notify:
-            trace: syn_20
+            trace: syn_20_3st
 
     aggregator:
       config_template: ../_metadata/aggregator_base.json

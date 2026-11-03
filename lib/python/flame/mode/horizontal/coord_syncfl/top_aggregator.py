@@ -47,7 +47,7 @@ class TopAggregator(BaseTopAggregator):
 
         end = channel.one_end()
         msg, _ = channel.recv(end)
-        logger.debug(f"received message = {msg} from {end}")
+        logger.debug(f"received message keys={list(msg or ())} from {end}")
 
         self._work_done = msg[MessageType.EOT]
         if self._work_done:

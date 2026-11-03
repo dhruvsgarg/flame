@@ -1,0 +1,2 @@
+{"cifar10": 0.80, "google_speech": 0.88,
+ "src": "FELIX FX-N146 (operator 10-25): cifar = FL bound 80.1% at its 3000-round cap; speech = 88% set by the operator (FL bound 87.5% at round 835, stopped while rising +0.7 pp / 100 rounds; fits 88.6-89.9% at round 1500)"}

@@ -5,7 +5,9 @@
   style      SOCC-2026 rcParams + PDF/timestamp output convention (one "look")
   baselines  display registry: names, colors, emphasis (one place to re-brand)
   reducers   streaming telemetry -> RunResult (one source of the 5 metrics)
-  figures    single-panel paper-figure builders over RunResult lists
+  figures    single-panel per-baseline figures (compare_baselines.py)
+  paper      FluxTune paper figures over seed-grouped arms (make_paper_figs.py)
+  synthetic  fake RunResults for layout previews and tests
 
 `make_paper_figs.py`, `plot_run.py` and `compare_baselines.py` all build on these.
 """

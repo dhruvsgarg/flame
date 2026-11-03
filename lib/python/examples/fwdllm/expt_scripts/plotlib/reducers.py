@@ -6,11 +6,12 @@ shared by plot_run / compare_baselines / make_paper_figs via load_run().
 Streams the aggregator JSONL in one pass (can be multi-GB) and keeps evals as an
 ORDERED series, not a data_id-keyed dict: data_id cycles per round (round 2 reuses
 data_id 0), so keying by it silently overwrites earlier rounds and corrupts Δloss.
-Field names per EXPERIMENTS.md §5.
+Field names per EXPERIMENTS.md §6.
 """
 
 from __future__ import annotations
 
+import bisect
 import glob
 import json
 import os
@@ -94,6 +95,14 @@ class RunResult:
     # IGNORED so a non-productive stalled tail can't skew the accumulated metrics.
     cutoff_ts: float | None = None      # None = no cutoff applied (full telemetry)
     plateau_ts: float | None = None     # ts of the last significant loss improvement
+    # EXPERIMENTS.md §6 paper-figure series (all keyed on the WALL ts the event was logged at).
+    is_async: bool | None = None        # agg_round.is_async (None = no agg_round)
+    commit_ts: list = field(default_factory=list)       # agg_round cycles with a commit_reason
+    commit_uploads: list = field(default_factory=list)  # uploads pooled into each commit
+    up_events: list = field(default_factory=list)       # (ts, bytes) trainer->agg
+    down_events: list = field(default_factory=list)     # (ts, bytes) agg->trainer
+    contribs: list = field(default_factory=list)        # (ts, end_id) per accepted upload
+    server_updates: list = field(default_factory=list)  # server_update records (audit flag)
 
     # ---- derived views (pure over the fields above) ----------------------- #
     def learning_curve(self):
@@ -167,11 +176,42 @@ class RunResult:
 
     def vclock_at(self, ts):
         """Last agg_round vclock_now at or before `ts` (sim runs). None if absent."""
-        v = None
-        for t, vc in self.vclock_track:
-            if ts is not None and t is not None and t <= ts:
-                v = vc
-        return v
+        if ts is None or not self.vclock_track:
+            return None
+        i = bisect.bisect_right(self.vclock_track, (ts, float("inf")))
+        return self.vclock_track[i - 1][1] if i else None
+
+    def native_s(self, ts):
+        """Seconds since run start on the run's native clock (sim: vclock, real: wall)."""
+        if ts is None or self.t0 is None:
+            return None
+        if self.is_sim:
+            v = self.vclock_at(ts)
+            if v is not None:
+                return v
+        return ts - self.t0
+
+    def first_crossing(self, target: float, consecutive: int = 1):
+        """First eval ending a run of `consecutive` evals all >= target. None if never."""
+        streak = 0
+        for e in self.evals:
+            if e["acc"] is None:
+                continue
+            streak = streak + 1 if e["acc"] >= target else 0
+            if streak >= max(1, consecutive):
+                return e
+        return None
+
+    def bytes_until(self, ts):
+        """(down_bytes, up_bytes) logged at or before wall `ts` (None = whole run)."""
+        lim = float("inf") if ts is None else ts
+        down = sum(sz for t, sz in self.down_events if t is not None and t <= lim)
+        up = sum(sz for t, sz in self.up_events if t is not None and t <= lim)
+        return down, up
+
+    def commits_until(self, ts):
+        """Server commits at or before wall `ts`."""
+        return bisect.bisect_right(self.commit_ts, ts) if ts is not None else len(self.commit_ts)
 
     def gpu_s_total(self):
         return self.trainer_gpu_s + self.agg_compute_s
@@ -183,7 +223,7 @@ class RunResult:
 def _read_aggregator(path: str) -> dict:
     """One streaming pass → the aggregator's BOUNDED raw structures (each carries a
     ts so a post-peak cutoff can be applied AFTER the peak time is known)."""
-    evals, agg_rounds, comm_down, sessions, vclock = [], [], [], [], []
+    evals, agg_rounds, comm_down, sessions, vclock, server_updates = [], [], [], [], [], []
     t0 = None
     for e in _iter_jsonl(path):
         ev = e.get("event")
@@ -211,19 +251,46 @@ def _read_aggregator(path: str) -> dict:
                 # consecutive same-data_id cycles into one sync "session".
                 "data_id": e.get("data_id"),
                 "is_async": e.get("is_async"),
+                "vclock": e.get("vclock_now"),
+                "commit": _is_commit(e),
+                "contributors": _contributors(e),
             })
             if e.get("vclock_now") is not None:
                 vclock.append((ts, float(e["vclock_now"])))
             for iv in (e.get("contributor_intervals") or []):
                 d, c = iv.get("dispatch_ts"), iv.get("commit_ts")
                 if d is not None and c is not None and c >= d:
-                    sessions.append((c, c - d))       # (commit_ts, duration)
+                    # keyed on wall ts: sim intervals are on the vclock, cutoff is wall
+                    sessions.append((ts, c - d))
+        elif ev == "server_update":
+            server_updates.append({k: e.get(k) for k in _SERVER_UPDATE_FIELDS})
         elif ev == "comm" and e.get("direction") == "agg_to_trainer":
             sz = e.get("size_bytes")
             if sz is not None:
                 comm_down.append((ts, sz, e.get("payload_kind")))
     return {"evals": evals, "agg_rounds": agg_rounds, "comm_down": comm_down,
-            "sessions": sessions, "vclock": vclock, "t0": t0}
+            "sessions": sessions, "vclock": vclock, "server_updates": server_updates,
+            "t0": t0}
+
+
+_COMMIT_REASONS = ("natural", "cap", "plateau")
+_SERVER_UPDATE_FIELDS = ("ts", "model_version", "rho", "rho_star", "phi", "n_eff",
+                         "n_req", "pool_size", "var_at_commit", "learning_rate",
+                         "update_ratio", "stop_reason")
+
+
+def _is_commit(e) -> bool:
+    """agg_round cycle that applied a server step; pre-commit_reason logs fall back to var_good_enough."""
+    if "commit_reason" in e:
+        return e.get("commit_reason") in _COMMIT_REASONS
+    return bool(e.get("var_good_enough"))
+
+
+def _contributors(e) -> list:
+    ends = e.get("contributing_trainers")
+    if ends is None:
+        ends = [iv.get("end") for iv in (e.get("contributor_intervals") or [])]
+    return [str(x) for x in ends if x is not None]
 
 
 def _compute_cutoff(evals, grace_s, loss_rel, mode="peak_acc"):
@@ -289,7 +356,7 @@ def _compute_round_spans(agg_rounds):
     for r in agg_rounds:
         if r.get("is_async"):
             continue
-        ts, did = r["ts"], r.get("data_id")
+        ts, did = (r["vclock"] if r.get("vclock") is not None else r["ts"]), r.get("data_id")
         if ts is None:
             continue
         if run_data_id is None or did != run_data_id:
@@ -384,6 +451,7 @@ def _read_trainers(tdir: str, cutoff: float, rr: RunResult):
                 sz = e.get("size_bytes")
                 if sz is not None:
                     rr.up_sizes.append(sz)
+                    rr.up_events.append((ts, sz))
                     rr.have_comm = True
                     key = ("trainer_to_agg", e.get("payload_kind"))
                     rr.comm_by_kind[key] = rr.comm_by_kind.get(key, 0) + sz
@@ -437,12 +505,24 @@ def load_run(run_dir: str, key: str | None = None,
         rr.agg_wall_s = max(walls)
     elif rr.evals and rr.t0 is not None:
         rr.agg_wall_s = max(0.0, rr.evals[-1]["ts"] - rr.t0)
-    rr.vclock_track = [(t, v) for (t, v) in raw["vclock"] if within(t)]
+    rr.vclock_track = sorted((t, v) for (t, v) in raw["vclock"] if within(t))
+    flags = [r["is_async"] for r in used_rounds if r.get("is_async") is not None]
+    rr.is_async = bool(flags[0]) if flags else None
+    pending = 0
+    for r in used_rounds:
+        rr.contribs.extend((r["ts"], end) for end in r["contributors"])
+        pending += len(r["contributors"])
+        if r["commit"]:
+            rr.commit_ts.append(r["ts"])
+            rr.commit_uploads.append(pending)
+            pending = 0
+    rr.server_updates = [u for u in raw["server_updates"] if within(u.get("ts"))]
     rr.round_span_durs = _compute_round_spans(used_rounds)
     rr.converge_json = _find_converge_json(run_dir)
     for (t, sz, kind) in raw["comm_down"]:
         if within(t):
             rr.down_sizes.append(sz)
+            rr.down_events.append((t, sz))
             key_k = ("agg_to_trainer", kind)
             rr.comm_by_kind[key_k] = rr.comm_by_kind.get(key_k, 0) + sz
     rr.have_comm = bool(rr.down_sizes)

@@ -1,0 +1,9 @@
+# F41 (FELIX ledger C3-C5 + balance; operator 10-21): all six + Felix arms, sims, 24 h into the trace, seed 1 (R25).
+# Cells: s0 static syn_0, s0u syn_0 + linear growth, s50u syn_50_3st + trace-tied usage growth (Q-STREAM). 31 legs per dataset (new-Felix arms eval off; ctl Felix = old Felix, the control);
+# cifar 24 h / speech 18 h vclock. Read: accuracy_table / felix_claims (time + bytes to accuracy), worst-10% client, top-20% share,
+# K trajectory (c4), resource_report --util.
+name: f41
+common: "--lease-from-telemetry --gpu-cpus-per-trainer 0.1"
+stages:
+  - {id: FS, args: "--tier F41 --gpu-share 2 --datasets google_speech"}
+  - {id: FC, args: "--tier F41 --datasets cifar10"}

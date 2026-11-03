@@ -10,6 +10,7 @@ order is still the sim_completion_ts order (logic unchanged, only wall pacing).
 """
 
 from collections import defaultdict
+from types import SimpleNamespace
 
 import pytest
 
@@ -185,3 +186,211 @@ def test_sync_barrier_zero_progress_when_all_delays_known_upfront():
     out = agg._sync_sim_recv_first_k(ch, ch.ends(), first_k=len(SCTS))
     assert len(ch.recv_calls) == 1  # single barrier call
     assert len(out) == len(SCTS)  # drained the whole cohort, no shortfall
+
+
+def test_oort_never_awaits_an_end_queued_for_cleanup():
+    # Run 18 speech oort syn_50_3st sim: a stale-rejected straggler stayed in selected_ends, was re-probed, and with a
+    # newly picked end of unknown delay the barrier blocked forever.
+    ch = RecordingChannel(SCTS, SCRAMBLED)
+    ch._selector = type("S", (), {"ordered_updates_recv_ends": ["t3"]})()
+    assert OortAgg._awaited_ends(ch, ["t1", "t3", "t4"]) == ["t1", "t4"]
+
+
+def test_redispatched_end_with_stale_return_is_still_awaited():
+    # FX-D109: t3's v84 update landed in the cleanup queue after its v117 dispatch; it still owes v117.
+    from flame.mode.horizontal.oort.top_aggregator import TopAggregator as OortAgg
+    from types import SimpleNamespace
+    ch = SimpleNamespace(_selector=SimpleNamespace(ordered_updates_recv_ends=["t3", "t5"]))
+    sent, got = {"t3": {84: 0.0, 117: 1.0}, "t5": {116: 0.0}}, {"t3": 84, "t5": 116}
+    assert OortAgg._awaited_ends(ch, ["t1", "t3", "t5"], sent, got) == ["t1", "t3"]
+
+
+def test_stale_dropped_return_is_not_awaited_again():
+    # FX-D112: a stale-dropped v1 return must count as returned, or FX-D109 awaits it forever (T3 speech oort sim).
+    from types import SimpleNamespace
+    agg = _bare(OortAgg)
+    agg.simulated, agg._round = True, 3
+    props = {}
+    ch = SimpleNamespace(_selector=SimpleNamespace(ordered_updates_recv_ends=["t3"]),
+                         set_end_property=lambda e, k, v: props.__setitem__((e, k), v),
+                         get_end_property=lambda e, k: props.get((e, k)))
+    agg._record_returned_trainer_props(ch, "t3", {MessageType.MODEL_VERSION: 1}, None)
+    assert OortAgg._awaited_ends(ch, ["t1", "t3"], {"t3": {1: 0.0}}, agg._returned_version) == ["t1"]
+
+
+def test_sync_over_quota_update_carries_to_next_barrier():
+    # FX-D113: G0U speech feddance sim blocked forever awaiting a straggler whose consumed update had been dropped.
+    agg = _bare(SyncAgg)
+    ch = RecordingChannel(SCTS, SCRAMBLED)
+    agg._sync_sim_recv_first_k(ch, ch.ends(), first_k=3)
+    out = agg._sync_sim_recv_first_k(ch, ch.ends(), first_k=2)
+    assert ch.recv_calls[1] == frozenset(SCTS) - {"t3", "t4"}  # carried ends aren't awaited again
+    assert sorted(md[0] for _m, md in out) == ["t3", "t4"]
+
+
+def test_sync_wait_k_caps_co_due_deliveries_at_k():
+    # FX-D122: sim took 6 commits at K=5; real closed at the 5th.
+    agg = _bare(SyncAgg)
+    agg._sync_wait_k_on = lambda: True
+    agg._sim_take_withheld_delivering = lambda e: None
+    agg._sim_reinject_ready_withheld = lambda: None
+    for e in ("t1", "t2", "t3"):
+        agg._sim_buffer.add(e, 300.0, ({}, (e, None)))
+    ch = RecordingChannel({}, [])
+    out = agg._sync_sim_recv_first_k(ch, [], first_k=2)
+    assert len(out) == 2 and len(agg._sim_sync_carry) == 1
+
+
+@pytest.mark.parametrize("on, carried", [(True, {"t3"}), (False, {"t2", "t3"})])
+def test_sync_stale_delivery_past_k_lands_this_pass(on, carried):
+    # FX-D156: a due stale return (never counts to K) was carried past the next selection, which then read stale beliefs.
+    agg = _bare(SyncAgg)
+    agg._round = 21
+    agg.config = SimpleNamespace(hyperparameters=SimpleNamespace(sim_ingest_stale_past_k=on))
+    agg._sync_wait_k_on = lambda: True
+    agg._sim_take_withheld_delivering = lambda e: None
+    agg._sim_reinject_ready_withheld = lambda: None
+    agg._sim_buffer.add("t1", 450.0, ({MessageType.MODEL_VERSION: 21}, ("t1", None)))
+    agg._sim_buffer.add("t2", 450.0, ({MessageType.MODEL_VERSION: 15}, ("t2", None)))
+    agg._sim_buffer.add("t3", 450.0, ({MessageType.MODEL_VERSION: 21}, ("t3", None)))
+    out = agg._sync_sim_recv_first_k(RecordingChannel({}, []), [], first_k=1)
+    assert set(agg._sim_sync_carry) == carried and len(out) == 3 - len(carried)
+
+
+def test_sync_withheld_delivery_stamps_speed_and_ready():
+    # FX-D124: delivered updates had speed 0 and a hold-inflated lag.
+    from flame.selector.properties import PROP_CLIENT_TASK_TRAIN_DURATION
+    agg = _bare(SyncAgg)
+    agg._sim_take_withheld_delivering = lambda e: None
+    agg._sim_reinject_ready_withheld = lambda: None
+    ch = RecordingChannel({"t1": 1.0}, [])
+    agg._sim_buffer.add("t1", 300.0, ({MessageType.SIM_CLIENT_TASK_TRAIN_DURATION_S: 42.0}, ("t1", None)))
+    agg._sync_sim_recv_first_k(ch, [], first_k=1)
+    assert ch.get_end_property("t1", PROP_CLIENT_TASK_TRAIN_DURATION).total_seconds() == 42.0
+    assert agg._sim_ready_ts == {"t1": 300.0}
+
+
+@pytest.mark.parametrize("dispatch_round, probed", [(9, {"t1", "t2"}), (10, {"t1", "t2", "t3"})])
+def test_sync_wait_k_skips_picks_that_owe_nothing(dispatch_round, probed):
+    # FX-D127: t3 replied stale; probing it blocked the barrier max(D) of wall. A re-dispatch at this version still owes (FX-D109).
+    from flame.selector.properties import PROP_ROUND_START_TIME
+    agg = _bare(SyncAgg)
+    agg._round = 10
+    agg._sync_wait_k_on = lambda: True
+    ch = RecordingChannel(SCTS, ["t1", "t2"])
+    ch._selector = type("S", (), {"ordered_updates_recv_ends": ["t3"]})()
+    ch.set_end_property("t3", PROP_ROUND_START_TIME, (dispatch_round, None))
+    agg._note_returned_version("t3", 9)
+    out = agg._sync_sim_recv_first_k(ch, ["t1", "t2", "t3"], first_k=2)
+    assert ch.recv_calls[0] == frozenset(probed)
+    assert [md[0] for _m, md in out] == ["t2", "t1"]  # ascending sct
+
+
+def test_superseded_return_neither_replies_nor_frees_the_slot():
+    # FX-D129 (PR28 C2 real oort 0379): its v3 return sat in the cleanup queue after a v4 re-dispatch; round-end cleanup
+    # freed the slot (re-picked while gated, EV17) and "replied" hid the v4 task from the 90 s abandon.
+    from flame.selector.properties import PROP_ROUND_START_TIME
+    agg = _bare(SyncAgg)
+    agg._round = 4
+    ch = RecordingChannel(SCTS, [])
+    ch._selector = type("S", (), {"ordered_updates_recv_ends": ["t1", "t3"]})()
+    for e, (sent, returned) in {"t1": (4, 4), "t3": (4, 3)}.items():
+        ch.set_end_property(e, PROP_ROUND_START_TIME, (sent, None))
+        agg._note_returned_version(e, returned)
+    assert agg._sync_replied(ch) == {"t1"}
+    agg._drop_superseded_returns(ch)
+    assert ch._selector.ordered_updates_recv_ends == ["t1"]
+
+
+def test_carried_withheld_delivery_commits_as_a_withheld_delivery():
+    # FX-D130 (PR28 G1 speech feddance EV16): a delivery carried past K (FX-D122) committed through the fresh path:
+    # no withheld_delivery event, gate re-applied, slot freed at carry instead of at commit (FX-D90).
+    agg = _bare(SyncAgg)
+    agg._round = 4
+    msg = {MessageType.WEIGHTS: "w", MessageType.SIM_COMPLETION_TS: 207.1}
+    agg._sim_sync_carry = {"t3": (300.0, (msg, ("t3", None)))}
+    agg._sim_sync_carry_withheld = {"t3"}
+    agg._sim_withheld_delivering = {"t3": (207.1, 300.0)}
+    agg._sim_withhold_if_unavail = lambda *a: pytest.fail("a carried delivery already passed its send-gate")
+    seen = []
+    agg._emit_withheld_delivery = lambda end, m, sct, dts: seen.append((end, sct, dts, agg._vclock.now))
+    out = agg._sync_sim_recv_first_k(RecordingChannel(SCTS, []), [], first_k=1)
+    assert [md[0] for _m, md in out] == ["t3"]
+    assert seen == [("t3", 207.1, 300.0, 300.0)]
+    assert agg._sim_ready_ts["t3"] == 300.0 and "t3" not in agg._sim_withheld_delivering
+
+
+class _LateChannel(RecordingChannel):
+    """`late` ends reach the rxq only after the first recv_fifo pass (compute overran its known-delay bound)."""
+
+    def __init__(self, scts, arrival_order, late):
+        super().__init__(scts, [e for e in arrival_order if e not in late])
+        self._late = [e for e in arrival_order if e in late]
+
+    def recv_fifo(self, end_ids, first_k=0, timeout=None):
+        if self.recv_calls:
+            self._queue += self._late
+            self._late = []
+        return super().recv_fifo(end_ids, first_k, timeout)
+
+
+@pytest.mark.parametrize("on", [True, False])
+def test_sync_barrier_awaits_overrun_pick(on):
+    # FX-D138 (PR29 C1 feddance T3 syn_50_3st): 0379's stub compute 3.6 s > D bound 3.3 s; the barrier dropped it, wait-K
+    # jumped the vclock to the next flip, and its sct-130 update committed at 150.
+    from flame.selector.properties import PROP_SIM_SEND_TS
+    from types import SimpleNamespace
+    agg = _bare(SyncAgg)
+    agg.config = SimpleNamespace(hyperparameters=SimpleNamespace(sim_barrier_awaits_picks=on))
+    agg._sim_known_delay_s = dict(SCTS)
+    ch = _LateChannel(SCTS, SCRAMBLED, late={"t2"})
+    for e in SCTS:
+        ch.set_end_property(e, PROP_SIM_SEND_TS, 0.0)
+    out = agg._sync_sim_recv_first_k(ch, ch.ends(), first_k=3)
+    assert [md[0] for _m, md in out] == (["t2", "t5", "t1"] if on else ["t5", "t1", "t4"])
+    assert ch.recv_calls == [frozenset(SCTS)] + ([frozenset({"t2"})] if on else [])
+
+
+def test_barrier_never_awaits_an_answered_dispatch():
+    # FX-D138: a pick whose reply to its latest dispatch already arrived owes nothing; no second pass.
+    from flame.selector.properties import PROP_SIM_SEND_TS
+    agg = _bare(OortAgg)
+    ch = RecordingChannel(SCTS, SCRAMBLED)
+    for e in SCTS:
+        ch.set_end_property(e, PROP_SIM_SEND_TS, 0.0)
+    agg._sim_answered_sst = {"t9": 0.0}
+    list(agg._sim_barrier_recv(ch, list(SCTS)))
+    assert len(ch.recv_calls) == 1
+    ch._queue = []
+    list(agg._sim_barrier_recv(ch, ["t1"]))              # t1 answered dispatch 0.0 above: still one pass
+    assert len(ch.recv_calls) == 2
+
+
+@pytest.mark.parametrize("on, want, carried", [(True, ["ta", "tg"], {"ts"}), (False, ["ta", "ts"], {"tg"})])
+def test_sync_withheld_due_mid_barrier_lands_in_this_version(on, want, carried):
+    # FX-D194 (G0U speech feddance syn_50_3st v12): tg gated at sct 20, due 50; sim closed v12 on ts (sct 60), carried tg.
+    agg = _bare(SyncAgg)
+    agg._round = 12
+    agg.config = SimpleNamespace(hyperparameters=SimpleNamespace(sim_reinject_lookahead=on))
+    agg._sync_wait_k_on = lambda: True
+    agg._sim_take_withheld_delivering = lambda e: None
+    held = {}
+
+    def gate(ch, end, sct, msgmd):
+        if end != "tg":
+            return False
+        held[end] = (50.0, msgmd)
+        return True
+
+    def reinject(horizon=None):
+        now = max(agg._vclock.now, horizon or 0.0)
+        for e, (dts, msgmd) in list(held.items()):
+            if dts <= now:
+                agg._sim_buffer.add(e, dts, held.pop(e)[1])
+
+    agg._sim_withhold_if_unavail = gate
+    agg._sim_reinject_ready_withheld = reinject
+    ch = RecordingChannel({"ta": 10.0, "tg": 20.0, "ts": 60.0}, ["ts", "tg", "ta"])
+    out = agg._sync_sim_recv_first_k(ch, ch.ends(), first_k=2)
+    assert [md[0] for _m, md in out] == want
+    assert set(agg._sim_sync_carry) == carried

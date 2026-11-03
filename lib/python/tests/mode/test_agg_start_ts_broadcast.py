@@ -66,7 +66,7 @@ def _stub_common(agg, channel, *, simulated):
     agg._inject_oracle_utilities = lambda ch, task: None
     agg._avail_stamp_end_states = lambda ch: None
     agg._avail_now = lambda: 0.0
-    agg._sim_abandon_stalled = lambda ch: None
+    agg._abandon_stalled = lambda ch: None
     agg._sim_evict_unavail_inflight = lambda ch: None
     agg.datasampler = types.SimpleNamespace(get_metadata=lambda r, e: {})
     agg.weights = {}

@@ -96,23 +96,23 @@ class TestTrainerTraceSubstitution:
     def test_trainer_client_notify_trace_matches_override(
         self, generator_source, tmp_path, baseline
     ):
-        exps = _run_generator(generator_source, tmp_path, baseline, trace="syn_20")
+        exps = _run_generator(generator_source, tmp_path, baseline, trace="syn_20_3st")
         assert exps, f"no experiments generated for baseline={baseline}"
         for exp in exps:
             trace = (
                 exp["trainer"]["config_overrides"]["hyperparameters"]
                 ["client_notify"]["trace"]
             )
-            assert trace == "syn_20", (
+            assert trace == "syn_20_3st", (
                 f"{exp['name']}: trainer client_notify.trace={trace!r}, "
-                f"expected 'syn_20' (--trace override was not propagated to "
+                f"expected 'syn_20_3st' (--trace override was not propagated to "
                 f"the trainer)"
             )
 
     def test_trainer_client_notify_trace_tracks_different_overrides(
         self, generator_source, tmp_path
     ):
-        for trace in ("syn_0", "syn_20", "syn_50"):
+        for trace in ("syn_0", "syn_20_3st", "syn_50_3st"):
             exps = _run_generator(
                 generator_source, tmp_path, "feddance", trace=trace
             )
@@ -135,16 +135,16 @@ class TestTrainerTraceSubstitution:
     def test_aggregator_trace_still_substituted(self, generator_source, tmp_path):
         """Regression guard: fixing the trainer side must not break the
         pre-existing aggregator-side substitution paths."""
-        exps = _run_generator(generator_source, tmp_path, "feddance", trace="syn_50")
+        exps = _run_generator(generator_source, tmp_path, "feddance", trace="syn_50_3st")
         for exp in exps:
             h = exp["aggregator"]["config_overrides"]["hyperparameters"]
-            assert h.get("availability_trace") == "syn_50"
+            assert exp["trainer"]["availability"]["mode"] == "syn_50_3st"  # runner fans it to availability_trace
             assert h.get("simUnavailability") is True
 
-        exps = _run_generator(generator_source, tmp_path, "oort", trace="syn_50")
+        exps = _run_generator(generator_source, tmp_path, "oort", trace="syn_50_3st")
         for exp in exps:
             h = exp["aggregator"]["config_overrides"]["hyperparameters"]
-            assert h["trackTrainerAvail"]["trace"] == "syn_50"
+            assert h.get("simUnavailability") is True and "trackTrainerAvail" not in h  # FX-D94: runner fans the trace
 
 
 class TestMultiTraceSubstitution:
@@ -152,25 +152,54 @@ class TestMultiTraceSubstitution:
     trace, queued in a single generated YAML/run."""
 
     def test_two_traces_double_the_experiment_count(self, generator_source, tmp_path):
-        single = _run_generator(generator_source, tmp_path, "felix", trace="syn_20")
-        both = _run_generator(generator_source, tmp_path, "felix", trace="syn_20 syn_50")
+        single = _run_generator(generator_source, tmp_path, "felix", trace="syn_20_3st")
+        both = _run_generator(generator_source, tmp_path, "felix", trace="syn_20_3st syn_50_3st")
         assert len(both) == 2 * len(single)
 
     def test_each_trace_propagates_to_its_own_experiments(
         self, generator_source, tmp_path
     ):
-        exps = _run_generator(generator_source, tmp_path, "felix", trace="syn_20 syn_50")
+        exps = _run_generator(generator_source, tmp_path, "felix", trace="syn_20_3st syn_50_3st")
         by_trace = {
             trace: [
                 e for e in exps
                 if e["trainer"]["config_overrides"]["hyperparameters"]
                 ["client_notify"]["trace"] == trace
             ]
-            for trace in ("syn_20", "syn_50")
+            for trace in ("syn_20_3st", "syn_50_3st")
         }
-        assert len(by_trace["syn_20"]) == len(by_trace["syn_50"]) == len(exps) // 2
+        assert len(by_trace["syn_20_3st"]) == len(by_trace["syn_50_3st"]) == len(exps) // 2
 
     def test_experiment_names_disambiguate_by_trace(self, generator_source, tmp_path):
-        exps = _run_generator(generator_source, tmp_path, "felix", trace="syn_20 syn_50")
+        exps = _run_generator(generator_source, tmp_path, "felix", trace="syn_20_3st syn_50_3st")
         names = [e["name"] for e in exps]
         assert len(names) == len(set(names)), f"duplicate names: {names}"
+
+
+class TestHarnessFlags:
+    """--harness / --delay-factor reach both roles; unset leaves configs untouched."""
+
+    def test_harness_and_factor_reach_both_roles(self, generator_source, tmp_path, monkeypatch):
+        monkeypatch.setenv("HARNESS", "stub")
+        monkeypatch.setenv("DELAY_FACTOR", "4")
+        exps = _run_generator(generator_source, tmp_path, "felix refl", "")
+        assert exps
+        for e in exps:
+            assert e["trainer"]["hyperparameters"]["harness_mode"] == "stub"
+            assert e["trainer"]["hyperparameters"]["training_delay_factor"] == 4.0
+            assert e["aggregator"]["config_overrides"]["hyperparameters"]["harness_mode"] == "stub"
+            assert e["name"].startswith("hstub_")
+
+    def test_unset_is_production_path(self, generator_source, tmp_path, monkeypatch):
+        monkeypatch.delenv("HARNESS", raising=False)
+        monkeypatch.delenv("DELAY_FACTOR", raising=False)
+        for e in _run_generator(generator_source, tmp_path, "felix", ""):
+            assert "harness_mode" not in (e["trainer"].get("hyperparameters") or {})
+            assert "training_delay_factor" not in (e["trainer"].get("hyperparameters") or {})
+            assert "harness_mode" not in e["aggregator"]["config_overrides"]["hyperparameters"]
+
+    def test_agg_hp_passthrough_parses_yaml_scalars(self, generator_source, tmp_path, monkeypatch):
+        monkeypatch.setenv("AGG_HP", "simColdStartGate=true simGateComputeCapSeconds=4.5")
+        for e in _run_generator(generator_source, tmp_path, "felix", ""):
+            h = e["aggregator"]["config_overrides"]["hyperparameters"]
+            assert h["simColdStartGate"] is True and h["simGateComputeCapSeconds"] == 4.5

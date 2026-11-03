@@ -18,7 +18,7 @@ import logging
 from abc import ABCMeta
 
 from flame.common.constants import DeviceType
-from flame.common.util import weights_to_device, weights_to_model_device
+from flame.common.util import materialize_weights, weights_to_device, weights_to_model_device
 from flame.mode.composer import CloneComposer
 from flame.mode.horizontal.syncfl.trainer import TAG_FETCH, TAG_UPLOAD
 from flame.mode.horizontal.syncfl.trainer import Trainer as BaseTrainer
@@ -100,6 +100,7 @@ class Trainer(BaseTrainer):
 
         msg, _ = channel.recv(self.aggregator_id)
 
+        materialize_weights(msg)  # FX-N77: WEIGHTS_BYTES from pack_weights
         if MessageType.WEIGHTS in msg:
             logger.debug("received model weights")
             self.weights = weights_to_model_device(msg[MessageType.WEIGHTS], self.model)

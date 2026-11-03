@@ -43,6 +43,8 @@ from diskcache import Cache
 from ..common.typing import ModelWeights
 from ..common.util import MLFramework, get_ml_framework_in_use, valid_frameworks
 from .abstract import AbstractOptimizer
+from .bn_buffers import clamp_running_var, is_bn_stat
+from .fedscale_yogi import FedScaleYoGi
 from .regularizer.default import Regularizer
 from .train_result import TrainResult
 
@@ -118,6 +120,9 @@ class REFL(AbstractOptimizer):
 
         # Gradient policy (applied after aggregation)
         self.gradient_policy = kwargs.get("gradient_policy", None)  # None, "yogi", "qfedavg"
+        self.clamp_running_var = str(kwargs.get("clamp_running_var", True)).lower() == "true"  # FX-N64
+        # BN running stats average fresh updates only (convex, var >= 0); a stale delta is meaningless for them (FX-N64).
+        self.bn_fresh_only = str(kwargs.get("bn_fresh_only", True)).lower() == "true"
         
         # YoGi parameters (if gradient_policy == "yogi")
         # NOTE: tau=1e-8 matches third_party/REFL (NOT 1e-3)
@@ -136,6 +141,7 @@ class REFL(AbstractOptimizer):
         
         if self.gradient_policy == "yogi":
             self.gradient_controller = self._init_yogi_controller()
+            self._yogi = FedScaleYoGi(self.yogi_eta, self.yogi_tau, self.yogi_beta, self.yogi_beta2)
 
         # Stale update storage
         self.stale_weights: Dict[str, ModelWeights] = {}
@@ -198,6 +204,7 @@ class REFL(AbstractOptimizer):
         
         # Accumulate weighted deltas separately (don't modify base yet)
         self.weighted_deltas = self._zero_weights(base_weights)
+        self._bn_imp = 0.0  # importance of the fresh updates folded into the BN running stats
 
         if len(cache) == 0 or total == 0:
             return base_weights
@@ -282,6 +289,11 @@ class REFL(AbstractOptimizer):
 
         # Normalize ONLY the deltas (not the base model!)
         self._normalize_by_importance(self.weighted_deltas, importance_sum)
+        if self.bn_fresh_only:  # no fresh update = BN stats unchanged
+            for k in self.weighted_deltas:
+                if is_bn_stat(k):
+                    self.weighted_deltas[k] = self.weighted_deltas[k] * (importance_sum / self._bn_imp) \
+                        if self._bn_imp > 0 else self.weighted_deltas[k] * 0.0
         
         # Log normalized deltas
         if sample_key:
@@ -654,9 +666,9 @@ class REFL(AbstractOptimizer):
                 val2 = 0.0
                 
                 for key in current_model.keys():
-                    if key not in tres.weights:
-                        continue
-                        
+                    if key not in tres.weights or not current_model[key].is_floating_point():
+                        continue  # REFL's norm runs over model.parameters() only
+
                     param = current_model[key]
                     update = tres.weights[key]
                     
@@ -717,7 +729,11 @@ class REFL(AbstractOptimizer):
         
         if ml_framework == MLFramework.PYTORCH:
             import torch
-            return {k: torch.zeros_like(v) for k, v in weights.items()}
+            # Integer buffers (BatchNorm num_batches_tracked) accumulate in float (FX-L41).
+            return {
+                k: torch.zeros_like(v, dtype=v.dtype if v.is_floating_point() else torch.float64)
+                for k, v in weights.items()
+            }
         elif ml_framework == MLFramework.TENSORFLOW:
             import numpy as np
             return [np.zeros_like(w) for w in weights]
@@ -731,7 +747,12 @@ class REFL(AbstractOptimizer):
         if ml_framework == MLFramework.PYTORCH:
             for k in base.keys():
                 if k in deltas:
-                    base[k] += deltas[k]
+                    d = deltas[k]
+                    if d.dtype != base[k].dtype:
+                        d = d.round().to(base[k].dtype)
+                    base[k] += d
+            if self.clamp_running_var and clamp_running_var(base):
+                logger.warning("[REFL_BN] negative running_var clamped to 0 (FX-N64)")
         elif ml_framework == MLFramework.TENSORFLOW:
             for idx in range(len(base)):
                 base[idx] += deltas[idx]
@@ -772,7 +793,12 @@ class REFL(AbstractOptimizer):
         Formula: weighted_deltas += delta * importance
         """
         # Accumulate weighted deltas (not into base model!)
+        fresh = not tres.staleness
+        if fresh:
+            self._bn_imp += importance
         for k, v in tres.weights.items():
+            if self.bn_fresh_only and not fresh and is_bn_stat(k):
+                continue
             if k in self.weighted_deltas:
                 self.weighted_deltas[k] += v * importance
             else:
@@ -822,6 +848,16 @@ class REFL(AbstractOptimizer):
         Returns:
             Adjusted model weights after applying gradient policy
         """
+        if isinstance(current_model, dict) and self.gradient_policy == "yogi":
+            return self._yogi.step(last_model, current_model)
+        if isinstance(current_model, dict):
+            # REFL's policies act on model.parameters() only; buffers (BN stats, counters) keep the weighted average.
+            ints = {k: v for k, v in current_model.items() if not v.is_floating_point() or is_bn_stat(k)}
+            if ints:
+                floats = [k for k in current_model if k not in ints]
+                out = self._apply_gradient_policy(
+                    {k: last_model[k] for k in floats}, {k: current_model[k] for k in floats}, trainers)
+                return {k: ints[k] if k in ints else out[k] for k in current_model}
         if self.gradient_policy == "yogi":
             return self._apply_yogi(last_model, current_model)
         elif self.gradient_policy == "qfedavg":
@@ -842,44 +878,8 @@ class REFL(AbstractOptimizer):
         """
         ml_framework = get_ml_framework_in_use()
         
-        if ml_framework == MLFramework.PYTORCH:
-            import torch
-            
-            # Compute model difference
-            diff = {k: current_model[k] - last_model[k] for k in current_model.keys()}
-            
-            # Initialize YoGi state if needed
-            if self.gradient_controller['v_t'] is None:
-                self.gradient_controller['v_t'] = {k: v ** 2 for k, v in diff.items()}
-                self.gradient_controller['delta_t'] = {k: v.clone() for k, v in diff.items()}
-                adjusted_diff = diff
-            else:
-                # Apply YoGi updates
-                adjusted_diff = {}
-                v_t = self.gradient_controller['v_t']
-                delta_t = self.gradient_controller['delta_t']
-                
-                for k in diff.keys():
-                    gradient = diff[k]
-                    gradient_square = gradient ** 2
-                    
-                    # Update momentum
-                    delta_t[k] = (
-                        self.yogi_beta * delta_t[k] + (1.0 - self.yogi_beta) * gradient
-                    )
-                    
-                    # Update adaptive learning rate (YoGi-specific)
-                    v_t[k] = v_t[k] - (1.0 - self.yogi_beta2) * gradient_square * torch.sign(
-                        v_t[k] - gradient_square
-                    )
-                    
-                    # Apply adaptive learning rate
-                    yogi_lr = self.yogi_eta / (torch.sqrt(v_t[k]) + self.yogi_tau)
-                    adjusted_diff[k] = yogi_lr * delta_t[k]
-            
-            # Return last_model + adjusted_diff
-            return {k: last_model[k] + adjusted_diff[k] for k in last_model.keys()}
-            
+        if ml_framework == MLFramework.PYTORCH:  # dict weights go through FedScaleYoGi in _apply_gradient_policy
+            return self._yogi.step(last_model, current_model)
         elif ml_framework == MLFramework.TENSORFLOW:
             import numpy as np
             

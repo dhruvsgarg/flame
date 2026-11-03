@@ -23,6 +23,7 @@ from flame.channel import VAL_CH_STATE_RECV, VAL_CH_STATE_SEND
 from flame.common.constants import DeviceType, TrainState
 from flame.common.custom_abcmeta import abstract_attribute
 from flame.common.util import (
+    materialize_weights,
     MLFramework,
     get_ml_framework_in_use,
     weights_to_device,
@@ -103,6 +104,7 @@ class Trainer(BaseTrainer):
             time.sleep(1)
             return
 
+        materialize_weights(msg)  # FX-N77: WEIGHTS_BYTES from pack_weights
         if MessageType.WEIGHTS in msg:
             self.weights = weights_to_model_device(msg[MessageType.WEIGHTS], self.model)
             self._update_model()

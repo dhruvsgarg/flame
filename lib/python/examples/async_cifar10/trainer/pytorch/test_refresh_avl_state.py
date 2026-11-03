@@ -93,3 +93,17 @@ class TestRefreshAvlStateRealMode:
         assert t.avl_state != TrainerAvailState.AVL_TRAIN, (
             "real-mode _refresh_avl_state() must not be a no-op"
         )
+
+
+def test_pre_dispatch_trainer_keeps_t0_state_then_catches_up():
+    # FX-L44: spawned 300s before the join barrier, a trainer must not consume trace events on its own clock.
+    import time as _time
+
+    t = _make_trainer(simulated=False, agg_start_origin=None, now=None,
+                      events=[[0, "UN_AVL"], [60, "AVL_TRAIN"], [200, "UN_AVL"]])
+    t.trainer_start_ts = _time.time() - 300.0
+    t._refresh_avl_state()
+    assert t.avl_state == TrainerAvailState.UN_AVL and len(t.state_avl_event_ts) == 2
+    t._agg_start_origin = _time.time() - 90.0  # first dispatch: 90s past the barrier
+    t._refresh_avl_state()
+    assert t.avl_state == TrainerAvailState.AVL_TRAIN and t.state_avl_event_ts == [[200, "UN_AVL"]]

@@ -10,9 +10,9 @@ from flame.mode.message import MessageType
 from flame.selector.feddance import (
     FedDanceSelector,
     PROP_LOCAL_ACCURACY,
-    PROP_STAT_UTILITY,
     PROP_U,
 )
+from flame.selector.properties import PROP_STAT_UTILITY
 
 
 @pytest.fixture
@@ -79,11 +79,31 @@ class TestIdempotentWithinRound:
         assert set(r1.keys()) == set(r2.keys())
 
 
+class TestRecvNeverSelects:
+    """FX-D6: a RECV ends() call with no SEND this round must not fabricate in-flight picks."""
+
+    def test_recv_without_send_returns_empty(self, feddance, make_ends, channel_props):
+        from flame.channel import KEY_CH_STATE, VAL_CH_STATE_RECV
+        ends = make_ends(count=10, prefix="t")
+        props = {**channel_props, KEY_CH_STATE: VAL_CH_STATE_RECV}
+        assert feddance.select(ends, props, trainer_unavail_list=[], task_to_perform="train") == {}
+        assert feddance.selected_ends == set()
+
+    def test_recv_after_send_returns_this_rounds_picks(self, feddance, make_ends, channel_props):
+        from flame.channel import KEY_CH_STATE, VAL_CH_STATE_RECV, VAL_CH_STATE_SEND
+        ends = make_ends(count=10, prefix="t")
+        sent = feddance.select(ends, {**channel_props, KEY_CH_STATE: VAL_CH_STATE_SEND},
+                               trainer_unavail_list=[], task_to_perform="train")
+        recv = feddance.select(ends, {**channel_props, KEY_CH_STATE: VAL_CH_STATE_RECV},
+                               trainer_unavail_list=[], task_to_perform="train")
+        assert set(recv) == set(sent) and sent
+
+
 class TestOnUpdateReceived:
     def test_captures_loss_and_accuracy(self, feddance):
         feddance.on_update_received(
             "t1",
-            {MessageType.STAT_UTILITY: 0.7, MessageType.LOCAL_ACCURACY: 0.9},
+            {MessageType.TRAIN_LOSS_MEAN: 0.7, MessageType.LOCAL_ACCURACY: 0.9},
             round_num=1,
         )
         assert feddance.last_loss["t1"] == pytest.approx(0.7)
@@ -99,12 +119,13 @@ class TestOnUpdateReceived:
 
 
 class TestOnRoundCompleted:
-    def test_updates_prev_round_means(self, feddance, make_ends):
+    def test_updates_prev_round_means(self, make_ends):
+        feddance = FedDanceSelector(aggr_num=3, feedback="all")  # pre-FX-D150: mean raw accuracy
         feddance.on_update_received(
-            "a", {MessageType.STAT_UTILITY: 1.0, MessageType.LOCAL_ACCURACY: 0.5}, 1
+            "a", {MessageType.TRAIN_LOSS_MEAN: 1.0, MessageType.LOCAL_ACCURACY: 0.5}, 1
         )
         feddance.on_update_received(
-            "b", {MessageType.STAT_UTILITY: 3.0, MessageType.LOCAL_ACCURACY: 0.9}, 1
+            "b", {MessageType.TRAIN_LOSS_MEAN: 3.0, MessageType.LOCAL_ACCURACY: 0.9}, 1
         )
         feddance.selected_ends.update(["a", "b"])
         feddance.on_round_completed(make_ends(["a", "b"]), 1)
@@ -193,3 +214,84 @@ class TestSelectorRegistration:
     def test_enum_value_present(self):
         from flame.config import SelectorType
         assert SelectorType.FEDDANCE.value == "feddance"
+
+
+def test_unseen_device_takes_mean_I_not_stat_utility(make_ends, channel_props):
+    """Alg. 1 l.14-15: a never-returned device's I is last round's mean I; Oort stat_utility is not an input (Eq. 6)."""
+    s = FedDanceSelector(aggr_num=2)
+    s.prev_round_mean_I = 2.0
+    ends = make_ends(["a", "b"], **{PROP_STAT_UTILITY: 99.0})
+    s.on_update_received("a", {MessageType.TRAIN_LOSS_MEAN: 0.5}, 1)
+    s.select(ends, channel_props, trainer_unavail_list=[], task_to_perform="train")
+    assert s.last_loss == {"a": 0.5}
+    from flame.selector.properties import PROP_I
+    assert ends["b"].get_property(PROP_I) == 2.0 and ends["a"].get_property(PROP_I) == 0.5
+
+
+def test_random_utility_ignores_scores_and_respects_eligibility(make_ends, channel_props):
+    """utility=random (the fedavg arm): uniform over available, not-in-flight ends; seeded, so repeatable."""
+    picks = []
+    for _ in range(2):
+        s = FedDanceSelector(aggr_num=3, utility="random")
+        ends = make_ends(count=20, prefix="t")
+        s.last_loss = {"t19": 1e9}  # would win under V*I*A
+        picks.append(set(s.select(ends, channel_props, trainer_unavail_list=["t0"], task_to_perform="train")))
+    assert picks[0] == picks[1] and len(picks[0]) == 3 and "t0" not in picks[0]
+    with pytest.raises(ValueError):
+        FedDanceSelector(aggr_num=3, utility="bogus")
+
+
+class TestAggregatedFeedback:
+    """FX-D150: only aggregated updates report I/A; Alg. 1 l.3, l.11-15."""
+
+    def test_dropped_return_adds_zero_increment(self, feddance):
+        msg = {MessageType.TRAIN_LOSS_MEAN: 2.0, MessageType.LOCAL_ACCURACY: 0.4}
+        feddance.on_update_received("t", msg, 1)
+        feddance.on_update_received("t", {MessageType.TRAIN_LOSS_MEAN: 9.0, MessageType.LOCAL_ACCURACY: 0.9}, 3,
+                                    accepted=False)
+        assert feddance.last_loss["t"] == 2.0 and list(feddance.accuracy_history["t"]) == [0.4, 0.4]
+        assert feddance.last_engaged_round["t"] == 3 and "t" in feddance.ordered_updates_recv_ends
+
+    def test_all_mode_reads_dropped_returns(self):
+        s = FedDanceSelector(aggr_num=3, feedback="all")
+        s.on_update_received("t", {MessageType.TRAIN_LOSS_MEAN: 9.0, MessageType.LOCAL_ACCURACY: 0.9}, 3, accepted=False)
+        assert s.last_loss["t"] == 9.0
+
+    def test_selected_without_feedback_scores_zero(self, make_ends, channel_props):
+        s = FedDanceSelector(aggr_num=2, straggler_score="zero")
+        s.prev_round_mean_I = 2.0
+        ends = make_ends(["a", "b", "c"])
+        s.ever_selected = {"a"}  # picked before, never aggregated
+        s.select(ends, channel_props, trainer_unavail_list=[], task_to_perform="train")
+        from flame.selector.properties import PROP_I
+        assert ends["a"].get_property(PROP_I) == 0.0 and ends["b"].get_property(PROP_I) == 2.0
+        assert ends["a"].get_property(PROP_U) == 0.0
+
+    def test_selected_without_feedback_takes_mean_I(self, make_ends, channel_props):
+        """FX-N90 "mean": a straggler with no aggregated update scores last round's mean I (FedScale)."""
+        s = FedDanceSelector(aggr_num=2, straggler_score="mean")
+        s.prev_round_mean_I = 2.0
+        ends = make_ends(["a", "b", "c"])
+        s.ever_selected = {"a"}
+        s.select(ends, channel_props, trainer_unavail_list=[], task_to_perform="train")
+        from flame.selector.properties import PROP_I
+        assert ends["a"].get_property(PROP_I) == 2.0
+        with pytest.raises(ValueError):
+            FedDanceSelector(aggr_num=3, straggler_score="bogus")
+
+    def test_round_means_are_factor_means(self, make_ends):
+        feddance = FedDanceSelector(aggr_num=3, history_window=10, straggler_score="zero")
+        feddance.ever_selected = {"a", "b", "c"}
+        from collections import deque
+        feddance.accuracy_history["a"] = deque([0.2, 0.4], maxlen=5)  # slope 0.2 after this round's 0.4
+        feddance.on_update_received("a", {MessageType.TRAIN_LOSS_MEAN: 1.0, MessageType.LOCAL_ACCURACY: 0.6}, 1)
+        feddance.on_update_received("b", {MessageType.TRAIN_LOSS_MEAN: 3.0, MessageType.LOCAL_ACCURACY: 0.9}, 1)
+        feddance.on_update_received("c", {}, 1, accepted=False)  # straggler: I = 0, history [0.0]
+        feddance.on_round_completed(make_ends(["a", "b", "c"]), 1)
+        assert feddance.prev_round_mean_I == pytest.approx(4.0 / 3)
+        # a: slope (0.6-0.2)/2 = 0.2; b, c: one point -> previous mean A (1.0)
+        assert feddance.prev_round_mean_A == pytest.approx((0.2 + 1.0 + 1.0) / 3)
+
+    def test_invalid_feedback_raises(self):
+        with pytest.raises(ValueError):
+            FedDanceSelector(aggr_num=3, feedback="bogus")

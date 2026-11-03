@@ -1,5 +1,7 @@
 # Technical Specification: FedDance Implementation
 
+> **DEPRECATED — reference only.** The single source of truth is [ROBUST_FL_READINESS.md](lib/python/examples/_metadata/ROBUST_FL_READINESS.md) → [FELIX_READINESS.md](lib/python/examples/_metadata/FELIX_READINESS.md). This file only gets trimmed from here on as its content moves there; don't add to it.
+
 This document provides the technical requirements and architectural specification for reproducing **FedDance**, a participant selection framework for Federated Learning (FL) in dynamic environments.
 
 ---

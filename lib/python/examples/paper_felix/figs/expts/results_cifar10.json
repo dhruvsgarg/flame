@@ -1,0 +1,4122 @@
+{
+ "meta": {
+  "dataset": "cifar10",
+  "generated": "2026-10-29T05:20",
+  "seeds": [
+   1
+  ],
+  "run_root": "/coc/scratch/dgarg/mlsys27_felix_runs_20261026",
+  "code_key": "85e2b7ba3b5f",
+  "legs_done": 44,
+  "legs_total": 44,
+  "complete": true,
+  "units": {
+   "time_h": "hours of simulated time to the cell's target (5-eval mean)",
+   "gb": "cumulative wire GB at that time",
+   "acc": "percent",
+   "speedup": "stack time / Felix time",
+   "gb_ratio": "Felix GB / stack GB",
+   "slot_time_h": "slot-hours over the whole run (to the hit or 120 h): useful / discarded compute, held by a departed client, waiting at the barrier, idle"
+  },
+  "notes": "status hit = reached target, miss = ran to the end without it (final_acc, peak_acc5), pending = leg not done"
+ },
+ "stack_kinds": {
+  "Felix": "felix",
+  "FedBuff": "deployable",
+  "Oort": "deployable",
+  "REFL": "deployable",
+  "FedDance": "deployable",
+  "FedAvg": "deployable",
+  "FedBuff*": "oracle",
+  "Oort*": "oracle",
+  "REFL*": "oracle",
+  "FedDance*": "oracle",
+  "FedAvg*": "oracle"
+ },
+ "cells": {
+  "s0u": {
+   "label": "Syn-0%",
+   "target": 0.8,
+   "stacks": {
+    "Felix": {
+     "status": "hit",
+     "target": 0.8,
+     "time_h": 65.34,
+     "gb": 2333.8,
+     "updates_to_target": 542395,
+     "updates_per_h": 8301.0,
+     "final_acc": 80.01,
+     "peak_acc5": 80.01,
+     "end_h": 65.34,
+     "end_gb": 2333.8,
+     "total_updates": 542396,
+     "acc_at_h": {
+      "6": 71.57,
+      "12": 74.23,
+      "24": 76.52,
+      "48": 78.91,
+      "72": null,
+      "96": null,
+      "120": null
+     },
+     "time_h_to_acc": {
+      "50": 1.67,
+      "60": 2.67,
+      "70": 5.17,
+      "75": 14.84,
+      "80": 65.34
+     },
+     "gb_to_acc": {
+      "50": 100.1,
+      "60": 158.0,
+      "70": 295.7,
+      "75": 754.5,
+      "80": 2333.8
+     },
+     "acc_at_felix_hit_h": 80.01,
+     "gb_by_fate": {
+      "aggregated": 2333.4,
+      "open": 0.1
+     },
+     "paid_not_used_pct": 0.01,
+     "mean_staleness": 5.9,
+     "slot_busy_pct": 99.9,
+     "slot_held_departed_pct": 0.0,
+     "left_mid_task_pct": 0.0,
+     "slot_time_h": {
+      "useful_compute": 3917.2,
+      "wasted_compute": 0.6,
+      "held_departed": 0.0,
+      "waiting": 0.0,
+      "idle": 2.5,
+      "await_commit": 0.0
+     },
+     "slot_time_lost_per_departure_s": null,
+     "timeouts": 0,
+     "wire_msgs": 1084909,
+     "diverged": false,
+     "kind": "felix",
+     "n_seeds": 1
+    },
+    "FedBuff": {
+     "status": "hit",
+     "target": 0.8,
+     "time_h": 77.84,
+     "gb": 3464.1,
+     "updates_to_target": 805132,
+     "updates_per_h": 10344.0,
+     "final_acc": 80.05,
+     "peak_acc5": 80.05,
+     "end_h": 77.84,
+     "end_gb": 3464.1,
+     "total_updates": 805133,
+     "acc_at_h": {
+      "6": 61.31,
+      "12": 71.24,
+      "24": 75.19,
+      "48": 78.06,
+      "72": 79.58,
+      "96": null,
+      "120": null
+     },
+     "time_h_to_acc": {
+      "50": 3.34,
+      "60": 5.5,
+      "70": 10.5,
+      "75": 23.34,
+      "80": 77.84
+     },
+     "gb_to_acc": {
+      "50": 227.0,
+      "60": 365.2,
+      "70": 667.5,
+      "75": 1357.1,
+      "80": 3464.1
+     },
+     "acc_at_felix_hit_h": 79.21,
+     "gb_by_fate": {
+      "aggregated": 3463.7,
+      "open": 0.1
+     },
+     "paid_not_used_pct": 0.0,
+     "mean_staleness": 5.59,
+     "slot_busy_pct": 96.6,
+     "slot_held_departed_pct": 0.0,
+     "left_mid_task_pct": 0.0,
+     "slot_time_h": {
+      "useful_compute": 4509.3,
+      "wasted_compute": 0.5,
+      "held_departed": 0.0,
+      "waiting": 0.0,
+      "idle": 160.5,
+      "await_commit": 0.0
+     },
+     "slot_time_lost_per_departure_s": null,
+     "timeouts": 0,
+     "wire_msgs": 1610379,
+     "diverged": false,
+     "kind": "deployable",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": 1.191,
+      "gb_ratio": 0.674,
+      "gb_saving_pct": 32.6,
+      "acc_gain_pp_at_felix_hit_h": 0.79
+     }
+    },
+    "Oort": {
+     "status": "miss",
+     "target": 0.8,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 77.71,
+     "peak_acc5": 77.71,
+     "end_h": 120.01,
+     "end_gb": 84.3,
+     "total_updates": 18360,
+     "acc_at_h": {
+      "6": 40.54,
+      "12": 53.01,
+      "24": 61.61,
+      "48": 69.15,
+      "72": 73.51,
+      "96": 75.71,
+      "120": 77.71
+     },
+     "time_h_to_acc": {
+      "50": 9.13,
+      "60": 21.25,
+      "70": 52.52,
+      "75": 88.5,
+      "80": null
+     },
+     "gb_to_acc": {
+      "50": 12.1,
+      "60": 21.0,
+      "70": 41.2,
+      "75": 63.9,
+      "80": null
+     },
+     "acc_at_felix_hit_h": 71.94,
+     "gb_by_fate": {
+      "aggregated": 79.0,
+      "discarded": 5.3
+     },
+     "paid_not_used_pct": 6.25,
+     "mean_staleness": 0.0,
+     "slot_busy_pct": null,
+     "slot_held_departed_pct": null,
+     "left_mid_task_pct": 0.0,
+     "slot_time_h": {
+      "useful_compute": 713.2,
+      "wasted_compute": 108.8,
+      "held_departed": 0.0,
+      "waiting": 816.8,
+      "idle": 0.0,
+      "await_commit": 0.0
+     },
+     "slot_time_lost_per_departure_s": null,
+     "timeouts": 0,
+     "wire_msgs": 39168,
+     "diverged": false,
+     "kind": "deployable",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 8.06
+     }
+    },
+    "REFL": {
+     "status": "miss",
+     "target": 0.8,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 75.03,
+     "peak_acc5": 75.09,
+     "end_h": 120.01,
+     "end_gb": 1720.9,
+     "total_updates": 399925,
+     "acc_at_h": {
+      "6": 52.05,
+      "12": 63.41,
+      "24": 70.67,
+      "48": 73.85,
+      "72": 74.65,
+      "96": 74.95,
+      "120": 75.04
+     },
+     "time_h_to_acc": {
+      "50": 5.17,
+      "60": 9.67,
+      "70": 21.51,
+      "75": 87.33,
+      "80": null
+     },
+     "gb_to_acc": {
+      "50": 73.8,
+      "60": 138.9,
+      "70": 307.2,
+      "75": 1251.2,
+      "80": null
+     },
+     "acc_at_felix_hit_h": 74.44,
+     "gb_by_fate": {
+      "aggregated": 1721.1,
+      "open": 0.0
+     },
+     "paid_not_used_pct": 0.0,
+     "mean_staleness": 0.15,
+     "slot_busy_pct": null,
+     "slot_held_departed_pct": null,
+     "left_mid_task_pct": 0.0,
+     "slot_time_h": {
+      "useful_compute": 1165.0,
+      "wasted_compute": 0.0,
+      "held_departed": 0.0,
+      "waiting": 1196.6,
+      "idle": 0.0,
+      "await_commit": 0.0
+     },
+     "slot_time_lost_per_departure_s": null,
+     "timeouts": 0,
+     "wire_msgs": 799852,
+     "diverged": false,
+     "kind": "deployable",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 5.56
+     }
+    },
+    "FedDance": {
+     "status": "miss",
+     "target": 0.8,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 75.77,
+     "peak_acc5": 75.86,
+     "end_h": 120.0,
+     "end_gb": 1586.3,
+     "total_updates": 291030,
+     "acc_at_h": {
+      "6": 49.95,
+      "12": 61.98,
+      "24": 70.49,
+      "48": 74.53,
+      "72": 75.35,
+      "96": 75.79,
+      "120": 75.77
+     },
+     "time_h_to_acc": {
+      "50": 6.0,
+      "60": 10.84,
+      "70": 22.84,
+      "75": 57.5,
+      "80": null
+     },
+     "gb_to_acc": {
+      "50": 84.3,
+      "60": 151.1,
+      "70": 314.4,
+      "75": 768.9,
+      "80": null
+     },
+     "acc_at_felix_hit_h": 75.31,
+     "gb_by_fate": {
+      "discarded": 334.1,
+      "aggregated": 1252.5,
+      "open": 0.0
+     },
+     "paid_not_used_pct": 21.06,
+     "mean_staleness": 0.0,
+     "slot_busy_pct": null,
+     "slot_held_departed_pct": null,
+     "left_mid_task_pct": 0.0,
+     "slot_time_h": {
+      "useful_compute": 857.6,
+      "wasted_compute": 550.2,
+      "held_departed": 0.0,
+      "waiting": 729.8,
+      "idle": 0.0,
+      "await_commit": 0.0
+     },
+     "slot_time_lost_per_departure_s": null,
+     "timeouts": 0,
+     "wire_msgs": 737314,
+     "diverged": false,
+     "kind": "deployable",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 4.69
+     }
+    },
+    "FedAvg": {
+     "status": "miss",
+     "target": 0.8,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 74.3,
+     "peak_acc5": 74.4,
+     "end_h": 120.0,
+     "end_gb": 1624.4,
+     "total_updates": 298035,
+     "acc_at_h": {
+      "6": 49.45,
+      "12": 60.84,
+      "24": 69.52,
+      "48": 73.04,
+      "72": 74.02,
+      "96": 74.21,
+      "120": 74.3
+     },
+     "time_h_to_acc": {
+      "50": 6.17,
+      "60": 11.5,
+      "70": 26.17,
+      "75": null,
+      "80": null
+     },
+     "gb_to_acc": {
+      "50": 83.7,
+      "60": 156.2,
+      "70": 355.1,
+      "75": null,
+      "80": null
+     },
+     "acc_at_felix_hit_h": 73.84,
+     "gb_by_fate": {
+      "discarded": 342.1,
+      "aggregated": 1282.7,
+      "open": 0.0
+     },
+     "paid_not_used_pct": 21.06,
+     "mean_staleness": 0.0,
+     "slot_busy_pct": null,
+     "slot_held_departed_pct": null,
+     "left_mid_task_pct": 0.0,
+     "slot_time_h": {
+      "useful_compute": 865.1,
+      "wasted_compute": 573.9,
+      "held_departed": 0.0,
+      "waiting": 707.7,
+      "idle": 0.0,
+      "await_commit": 0.0
+     },
+     "slot_time_lost_per_departure_s": null,
+     "timeouts": 0,
+     "wire_msgs": 755060,
+     "diverged": false,
+     "kind": "deployable",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 6.16
+     }
+    },
+    "FedBuff*": {
+     "status": "hit",
+     "target": 0.8,
+     "time_h": 72.34,
+     "gb": 3443.3,
+     "updates_to_target": 800300,
+     "updates_per_h": 11064.0,
+     "final_acc": 80.01,
+     "peak_acc5": 80.01,
+     "end_h": 72.34,
+     "end_gb": 3443.3,
+     "total_updates": 800301,
+     "acc_at_h": {
+      "6": 62.31,
+      "12": 71.41,
+      "24": 75.56,
+      "48": 78.35,
+      "72": 79.86,
+      "96": null,
+      "120": null
+     },
+     "time_h_to_acc": {
+      "50": 3.17,
+      "60": 5.17,
+      "70": 10.17,
+      "75": 21.67,
+      "80": 72.34
+     },
+     "gb_to_acc": {
+      "50": 223.0,
+      "60": 358.0,
+      "70": 676.8,
+      "75": 1332.4,
+      "80": 3443.3
+     },
+     "acc_at_felix_hit_h": 79.64,
+     "gb_by_fate": {
+      "aggregated": 3443.0,
+      "open": 0.1
+     },
+     "paid_not_used_pct": 0.0,
+     "mean_staleness": 5.9,
+     "slot_busy_pct": 99.9,
+     "slot_held_departed_pct": 0.0,
+     "left_mid_task_pct": 0.0,
+     "slot_time_h": {
+      "useful_compute": 4336.0,
+      "wasted_compute": 0.5,
+      "held_departed": 0.0,
+      "waiting": 0.0,
+      "idle": 3.7,
+      "await_commit": 0.0
+     },
+     "slot_time_lost_per_departure_s": null,
+     "timeouts": 0,
+     "wire_msgs": 1600719,
+     "diverged": false,
+     "kind": "oracle",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": 1.107,
+      "gb_ratio": 0.678,
+      "gb_saving_pct": 32.2,
+      "acc_gain_pp_at_felix_hit_h": 0.36
+     }
+    },
+    "Oort*": {
+     "status": "miss",
+     "target": 0.8,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 73.63,
+     "peak_acc5": 73.76,
+     "end_h": 120.08,
+     "end_gb": 93.0,
+     "total_updates": 20265,
+     "acc_at_h": {
+      "6": 48.22,
+      "12": 54.01,
+      "24": 61.34,
+      "48": 66.65,
+      "72": 70.55,
+      "96": 72.22,
+      "120": 73.66
+     },
+     "time_h_to_acc": {
+      "50": 6.71,
+      "60": 18.68,
+      "70": 64.55,
+      "75": null,
+      "80": null
+     },
+     "gb_to_acc": {
+      "50": 11.7,
+      "60": 20.5,
+      "70": 53.8,
+      "75": null,
+      "80": null
+     },
+     "acc_at_felix_hit_h": 70.17,
+     "gb_by_fate": {
+      "aggregated": 87.2,
+      "discarded": 5.8,
+      "open": 0.0
+     },
+     "paid_not_used_pct": 6.25,
+     "mean_staleness": 0.0,
+     "slot_busy_pct": null,
+     "slot_held_departed_pct": null,
+     "left_mid_task_pct": 0.0,
+     "slot_time_h": {
+      "useful_compute": 887.7,
+      "wasted_compute": 127.6,
+      "held_departed": 0.0,
+      "waiting": 913.4,
+      "idle": 0.0,
+      "await_commit": 0.0
+     },
+     "slot_time_lost_per_departure_s": null,
+     "timeouts": 0,
+     "wire_msgs": 43232,
+     "diverged": false,
+     "kind": "oracle",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 9.83
+     }
+    },
+    "REFL*": {
+     "status": "miss",
+     "target": 0.8,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 74.86,
+     "peak_acc5": 74.97,
+     "end_h": 120.0,
+     "end_gb": 1780.7,
+     "total_updates": 413828,
+     "acc_at_h": {
+      "6": 52.23,
+      "12": 63.68,
+      "24": 71.18,
+      "48": 73.81,
+      "72": 74.61,
+      "96": 74.84,
+      "120": 74.87
+     },
+     "time_h_to_acc": {
+      "50": 5.17,
+      "60": 9.5,
+      "70": 20.67,
+      "75": null,
+      "80": null
+     },
+     "gb_to_acc": {
+      "50": 75.7,
+      "60": 140.5,
+      "70": 306.2,
+      "75": null,
+      "80": null
+     },
+     "acc_at_felix_hit_h": 74.25,
+     "gb_by_fate": {
+      "aggregated": 1781.0,
+      "open": 0.0
+     },
+     "paid_not_used_pct": 0.0,
+     "mean_staleness": 0.15,
+     "slot_busy_pct": null,
+     "slot_held_departed_pct": null,
+     "left_mid_task_pct": 0.0,
+     "slot_time_h": {
+      "useful_compute": 1205.2,
+      "wasted_compute": 0.0,
+      "held_departed": 0.0,
+      "waiting": 1215.0,
+      "idle": 0.0,
+      "await_commit": 0.0
+     },
+     "slot_time_lost_per_departure_s": null,
+     "timeouts": 0,
+     "wire_msgs": 827658,
+     "diverged": false,
+     "kind": "oracle",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 5.75
+     }
+    },
+    "FedDance*": {
+     "status": "miss",
+     "target": 0.8,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 73.03,
+     "peak_acc5": 73.37,
+     "end_h": 120.0,
+     "end_gb": 1973.1,
+     "total_updates": 361995,
+     "acc_at_h": {
+      "6": 55.99,
+      "12": 64.87,
+      "24": 71.06,
+      "48": 72.49,
+      "72": 72.83,
+      "96": 72.86,
+      "120": 73.04
+     },
+     "time_h_to_acc": {
+      "50": 4.17,
+      "60": 7.84,
+      "70": 20.34,
+      "75": null,
+      "80": null
+     },
+     "gb_to_acc": {
+      "50": 70.2,
+      "60": 131.3,
+      "70": 340.6,
+      "75": null,
+      "80": null
+     },
+     "acc_at_felix_hit_h": 72.56,
+     "gb_by_fate": {
+      "discarded": 415.4,
+      "aggregated": 1557.9,
+      "open": 0.0
+     },
+     "paid_not_used_pct": 21.05,
+     "mean_staleness": 0.0,
+     "slot_busy_pct": null,
+     "slot_held_departed_pct": null,
+     "left_mid_task_pct": 0.0,
+     "slot_time_h": {
+      "useful_compute": 917.4,
+      "wasted_compute": 599.0,
+      "held_departed": 0.0,
+      "waiting": 879.9,
+      "idle": 0.0,
+      "await_commit": 0.0
+     },
+     "slot_time_lost_per_departure_s": null,
+     "timeouts": 0,
+     "wire_msgs": 917054,
+     "diverged": false,
+     "kind": "oracle",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 7.44
+     }
+    },
+    "FedAvg*": {
+     "status": "miss",
+     "target": 0.8,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 74.63,
+     "peak_acc5": 74.74,
+     "end_h": 120.0,
+     "end_gb": 1853.4,
+     "total_updates": 340020,
+     "acc_at_h": {
+      "6": 51.17,
+      "12": 62.76,
+      "24": 70.68,
+      "48": 73.66,
+      "72": 74.33,
+      "96": 74.67,
+      "120": 74.63
+     },
+     "time_h_to_acc": {
+      "50": 5.5,
+      "60": 10.0,
+      "70": 22.01,
+      "75": null,
+      "80": null
+     },
+     "gb_to_acc": {
+      "50": 85.2,
+      "60": 154.4,
+      "70": 340.1,
+      "75": null,
+      "80": null
+     },
+     "acc_at_felix_hit_h": 74.37,
+     "gb_by_fate": {
+      "aggregated": 1463.4,
+      "discarded": 390.3,
+      "open": 0.0
+     },
+     "paid_not_used_pct": 21.06,
+     "mean_staleness": 0.0,
+     "slot_busy_pct": null,
+     "slot_held_departed_pct": null,
+     "left_mid_task_pct": 0.0,
+     "slot_time_h": {
+      "useful_compute": 989.5,
+      "wasted_compute": 655.4,
+      "held_departed": 0.0,
+      "waiting": 808.0,
+      "idle": 0.0,
+      "await_commit": 0.0
+     },
+     "slot_time_lost_per_departure_s": null,
+     "timeouts": 0,
+     "wire_msgs": 861422,
+     "diverged": false,
+     "kind": "oracle",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 5.63
+     }
+    }
+   },
+   "summary": {
+    "target": 0.8,
+    "felix_first": true,
+    "all_stacks_in": true,
+    "best_deployable": "FedBuff",
+    "best_oracle": "FedBuff*",
+    "vs_best_deployable": {
+     "stack": "FedBuff",
+     "speedup": 1.191,
+     "gb_ratio": 0.674,
+     "gb_saving_pct": 32.6
+    },
+    "vs_best_oracle": {
+     "stack": "FedBuff*",
+     "speedup": 1.107,
+     "gb_ratio": 0.678,
+     "gb_saving_pct": 32.2
+    },
+    "vs_fedbuff": {
+     "stack": "FedBuff",
+     "speedup": 1.191,
+     "gb_ratio": 0.674,
+     "gb_saving_pct": 32.6
+    }
+   }
+  },
+  "s20u": {
+   "label": "Syn-20%",
+   "target": 0.8,
+   "stacks": {
+    "Felix": {
+     "status": "hit",
+     "target": 0.8,
+     "time_h": 65.84,
+     "gb": 2548.8,
+     "updates_to_target": 592366,
+     "updates_per_h": 8997.0,
+     "final_acc": 80.07,
+     "peak_acc5": 80.07,
+     "end_h": 65.84,
+     "end_gb": 2548.8,
+     "total_updates": 592366,
+     "acc_at_h": {
+      "6": 71.52,
+      "12": 74.32,
+      "24": 76.46,
+      "48": 78.49,
+      "72": null,
+      "96": null,
+      "120": null
+     },
+     "time_h_to_acc": {
+      "50": 1.67,
+      "60": 2.67,
+      "70": 5.17,
+      "75": 14.84,
+      "80": 65.84
+     },
+     "gb_to_acc": {
+      "50": 107.5,
+      "60": 168.8,
+      "70": 316.2,
+      "75": 809.2,
+      "80": 2548.8
+     },
+     "acc_at_felix_hit_h": 80.07,
+     "gb_by_fate": {
+      "aggregated": 2525.6,
+      "late": 22.8,
+      "open": 0.1,
+      "evicted": 0.0
+     },
+     "paid_not_used_pct": 0.01,
+     "mean_staleness": 7.45,
+     "slot_busy_pct": 99.9,
+     "slot_held_departed_pct": 0.0,
+     "left_mid_task_pct": 0.92,
+     "slot_time_h": {
+      "useful_compute": 3946.7,
+      "wasted_compute": 0.7,
+      "held_departed": 0.2,
+      "waiting": 0.0,
+      "idle": 2.7,
+      "await_commit": 0.0
+     },
+     "slot_time_lost_per_departure_s": 0.0,
+     "timeouts": 0,
+     "wire_msgs": 1184873,
+     "diverged": false,
+     "kind": "felix",
+     "n_seeds": 1
+    },
+    "FedBuff": {
+     "status": "hit",
+     "target": 0.8,
+     "time_h": 80.84,
+     "gb": 2899.7,
+     "updates_to_target": 673930,
+     "updates_per_h": 8337.0,
+     "final_acc": 80.01,
+     "peak_acc5": 80.01,
+     "end_h": 80.84,
+     "end_gb": 2899.7,
+     "total_updates": 673931,
+     "acc_at_h": {
+      "6": 59.43,
+      "12": 69.77,
+      "24": 74.57,
+      "48": 77.72,
+      "72": 79.56,
+      "96": null,
+      "120": null
+     },
+     "time_h_to_acc": {
+      "50": 3.67,
+      "60": 6.17,
+      "70": 12.34,
+      "75": 27.34,
+      "80": 80.84
+     },
+     "gb_to_acc": {
+      "50": 202.5,
+      "60": 329.9,
+      "70": 626.6,
+      "75": 1263.6,
+      "80": 2899.7
+     },
+     "acc_at_felix_hit_h": 79.65,
+     "gb_by_fate": {
+      "aggregated": 2895.6,
+      "late": 3.7,
+      "open": 0.1,
+      "timeout": 0.0
+     },
+     "paid_not_used_pct": 0.0,
+     "mean_staleness": 5.7,
+     "slot_busy_pct": 77.9,
+     "slot_held_departed_pct": 18.5,
+     "left_mid_task_pct": 0.79,
+     "slot_time_h": {
+      "useful_compute": 3779.7,
+      "wasted_compute": 0.4,
+      "held_departed": 896.6,
+      "waiting": 0.0,
+      "idle": 173.6,
+      "await_commit": 0.0
+     },
+     "slot_time_lost_per_departure_s": 603.0,
+     "timeouts": 2,
+     "wire_msgs": 1347980,
+     "diverged": false,
+     "kind": "deployable",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": 1.228,
+      "gb_ratio": 0.879,
+      "gb_saving_pct": 12.1,
+      "acc_gain_pp_at_felix_hit_h": 0.35
+     }
+    },
+    "Oort": {
+     "status": "miss",
+     "target": 0.8,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 76.06,
+     "peak_acc5": 76.27,
+     "end_h": 120.0,
+     "end_gb": 62.5,
+     "total_updates": 13065,
+     "acc_at_h": {
+      "6": 32.77,
+      "12": 45.33,
+      "24": 56.34,
+      "48": 66.62,
+      "72": 70.62,
+      "96": 73.93,
+      "120": 76.06
+     },
+     "time_h_to_acc": {
+      "50": 17.5,
+      "60": 30.43,
+      "70": 70.1,
+      "75": 108.72,
+      "80": null
+     },
+     "gb_to_acc": {
+      "50": 11.6,
+      "60": 20.0,
+      "70": 38.7,
+      "75": 57.2,
+      "80": null
+     },
+     "acc_at_felix_hit_h": 68.78,
+     "gb_by_fate": {
+      "aggregated": 55.1,
+      "discarded": 4.2,
+      "late": 1.1,
+      "timeout": 1.0
+     },
+     "paid_not_used_pct": 8.59,
+     "mean_staleness": 0.0,
+     "slot_busy_pct": null,
+     "slot_held_departed_pct": null,
+     "left_mid_task_pct": 6.72,
+     "slot_time_h": {
+      "useful_compute": 430.8,
+      "wasted_compute": 68.9,
+      "held_departed": 177.1,
+      "waiting": 759.5,
+      "idle": 0.0,
+      "await_commit": 0.0
+     },
+     "slot_time_lost_per_departure_s": 653.0,
+     "timeouts": 481,
+     "wire_msgs": 29066,
+     "diverged": false,
+     "kind": "deployable",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 11.22
+     }
+    },
+    "REFL": {
+     "status": "miss",
+     "target": 0.8,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 75.21,
+     "peak_acc5": 75.23,
+     "end_h": 120.0,
+     "end_gb": 1502.3,
+     "total_updates": 349085,
+     "acc_at_h": {
+      "6": 49.92,
+      "12": 61.19,
+      "24": 69.93,
+      "48": 73.82,
+      "72": 74.67,
+      "96": 75.02,
+      "120": 75.22
+     },
+     "time_h_to_acc": {
+      "50": 6.02,
+      "60": 11.0,
+      "70": 24.34,
+      "75": 81.51,
+      "80": null
+     },
+     "gb_to_acc": {
+      "50": 77.1,
+      "60": 139.5,
+      "70": 309.3,
+      "75": 1022.7,
+      "80": null
+     },
+     "acc_at_felix_hit_h": 74.65,
+     "gb_by_fate": {
+      "aggregated": 1487.5,
+      "late": 14.7,
+      "timeout": 0.2,
+      "open": 0.0
+     },
+     "paid_not_used_pct": 0.01,
+     "mean_staleness": 0.44,
+     "slot_busy_pct": null,
+     "slot_held_departed_pct": null,
+     "left_mid_task_pct": 1.0,
+     "slot_time_h": {
+      "useful_compute": 1005.6,
+      "wasted_compute": 0.1,
+      "held_departed": 64.5,
+      "waiting": 1200.8,
+      "idle": 0.0,
+      "await_commit": 0.0
+     },
+     "slot_time_lost_per_departure_s": 66.0,
+     "timeouts": 72,
+     "wire_msgs": 698258,
+     "diverged": false,
+     "kind": "deployable",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 5.35
+     }
+    },
+    "FedDance": {
+     "status": "miss",
+     "target": 0.8,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 75.92,
+     "peak_acc5": 76.0,
+     "end_h": 120.0,
+     "end_gb": 1538.4,
+     "total_updates": 281820,
+     "acc_at_h": {
+      "6": 49.86,
+      "12": 61.79,
+      "24": 70.54,
+      "48": 74.34,
+      "72": 75.52,
+      "96": 75.78,
+      "120": 75.93
+     },
+     "time_h_to_acc": {
+      "50": 6.0,
+      "60": 10.5,
+      "70": 22.0,
+      "75": 58.01,
+      "80": null
+     },
+     "gb_to_acc": {
+      "50": 87.3,
+      "60": 148.2,
+      "70": 301.6,
+      "75": 748.7,
+      "80": null
+     },
+     "acc_at_felix_hit_h": 75.39,
+     "gb_by_fate": {
+      "discarded": 316.5,
+      "aggregated": 1212.9,
+      "timeout": 4.7,
+      "open": 0.0
+     },
+     "paid_not_used_pct": 20.94,
+     "mean_staleness": 0.0,
+     "slot_busy_pct": null,
+     "slot_held_departed_pct": null,
+     "left_mid_task_pct": 0.59,
+     "slot_time_h": {
+      "useful_compute": 832.6,
+      "wasted_compute": 537.1,
+      "held_departed": 42.1,
+      "waiting": 721.9,
+      "idle": 0.0,
+      "await_commit": 0.0
+     },
+     "slot_time_lost_per_departure_s": 72.0,
+     "timeouts": 2164,
+     "wire_msgs": 715052,
+     "diverged": false,
+     "kind": "deployable",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 4.61
+     }
+    },
+    "FedAvg": {
+     "status": "miss",
+     "target": 0.8,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 74.61,
+     "peak_acc5": 74.69,
+     "end_h": 120.0,
+     "end_gb": 1573.9,
+     "total_updates": 288360,
+     "acc_at_h": {
+      "6": 49.16,
+      "12": 60.92,
+      "24": 69.52,
+      "48": 73.16,
+      "72": 74.07,
+      "96": 74.52,
+      "120": 74.61
+     },
+     "time_h_to_acc": {
+      "50": 6.17,
+      "60": 11.5,
+      "70": 26.01,
+      "75": null,
+      "80": null
+     },
+     "gb_to_acc": {
+      "50": 82.6,
+      "60": 152.8,
+      "70": 343.1,
+      "75": null,
+      "80": null
+     },
+     "acc_at_felix_hit_h": 73.89,
+     "gb_by_fate": {
+      "discarded": 324.1,
+      "aggregated": 1241.0,
+      "timeout": 4.5,
+      "open": 0.0
+     },
+     "paid_not_used_pct": 20.94,
+     "mean_staleness": 0.0,
+     "slot_busy_pct": null,
+     "slot_held_departed_pct": null,
+     "left_mid_task_pct": 0.55,
+     "slot_time_h": {
+      "useful_compute": 838.3,
+      "wasted_compute": 546.7,
+      "held_departed": 40.9,
+      "waiting": 706.7,
+      "idle": 0.0,
+      "await_commit": 0.0
+     },
+     "slot_time_lost_per_departure_s": 73.0,
+     "timeouts": 2101,
+     "wire_msgs": 731572,
+     "diverged": false,
+     "kind": "deployable",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 6.11
+     }
+    },
+    "FedBuff*": {
+     "status": "hit",
+     "target": 0.8,
+     "time_h": 81.67,
+     "gb": 3079.5,
+     "updates_to_target": 715743,
+     "updates_per_h": 8764.0,
+     "final_acc": 80.02,
+     "peak_acc5": 80.02,
+     "end_h": 81.67,
+     "end_gb": 3079.5,
+     "total_updates": 715744,
+     "acc_at_h": {
+      "6": 59.96,
+      "12": 70.07,
+      "24": 74.74,
+      "48": 77.55,
+      "72": 79.48,
+      "96": null,
+      "120": null
+     },
+     "time_h_to_acc": {
+      "50": 3.5,
+      "60": 6.0,
+      "70": 11.84,
+      "75": 25.0,
+      "80": 81.67
+     },
+     "gb_to_acc": {
+      "50": 203.8,
+      "60": 342.5,
+      "70": 644.8,
+      "75": 1238.0,
+      "80": 3079.5
+     },
+     "acc_at_felix_hit_h": 79.02,
+     "gb_by_fate": {
+      "aggregated": 3075.4,
+      "late": 3.8,
+      "open": 0.1
+     },
+     "paid_not_used_pct": 0.0,
+     "mean_staleness": 6.03,
+     "slot_busy_pct": 80.9,
+     "slot_held_departed_pct": 19.1,
+     "left_mid_task_pct": 0.78,
+     "slot_time_h": {
+      "useful_compute": 3963.0,
+      "wasted_compute": 0.5,
+      "held_departed": 933.5,
+      "waiting": 0.0,
+      "idle": 3.3,
+      "await_commit": 0.0
+     },
+     "slot_time_lost_per_departure_s": 602.0,
+     "timeouts": 0,
+     "wire_msgs": 1431605,
+     "diverged": false,
+     "kind": "oracle",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": 1.24,
+      "gb_ratio": 0.828,
+      "gb_saving_pct": 17.2,
+      "acc_gain_pp_at_felix_hit_h": 0.98
+     }
+    },
+    "Oort*": {
+     "status": "miss",
+     "target": 0.8,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 73.53,
+     "peak_acc5": 73.53,
+     "end_h": 120.0,
+     "end_gb": 76.6,
+     "total_updates": 15660,
+     "acc_at_h": {
+      "6": 38.68,
+      "12": 54.98,
+      "24": 61.13,
+      "48": 65.35,
+      "72": 68.8,
+      "96": 71.2,
+      "120": 73.49
+     },
+     "time_h_to_acc": {
+      "50": 9.35,
+      "60": 20.86,
+      "70": 81.17,
+      "75": null,
+      "80": null
+     },
+     "gb_to_acc": {
+      "50": 11.7,
+      "60": 20.8,
+      "70": 54.5,
+      "75": null,
+      "80": null
+     },
+     "acc_at_felix_hit_h": 68.58,
+     "gb_by_fate": {
+      "aggregated": 66.1,
+      "timeout": 2.2,
+      "discarded": 4.9,
+      "late": 1.3,
+      "open": 0.0
+     },
+     "paid_not_used_pct": 9.51,
+     "mean_staleness": 0.0,
+     "slot_busy_pct": null,
+     "slot_held_departed_pct": null,
+     "left_mid_task_pct": 7.83,
+     "slot_time_h": {
+      "useful_compute": 637.2,
+      "wasted_compute": 122.6,
+      "held_departed": 246.5,
+      "waiting": 971.1,
+      "idle": 0.0,
+      "await_commit": 0.0
+     },
+     "slot_time_lost_per_departure_s": 636.0,
+     "timeouts": 1012,
+     "wire_msgs": 35626,
+     "diverged": false,
+     "kind": "oracle",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 11.42
+     }
+    },
+    "REFL*": {
+     "status": "miss",
+     "target": 0.8,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 74.44,
+     "peak_acc5": 74.65,
+     "end_h": 120.01,
+     "end_gb": 1723.6,
+     "total_updates": 400525,
+     "acc_at_h": {
+      "6": 51.49,
+      "12": 62.94,
+      "24": 70.45,
+      "48": 73.65,
+      "72": 74.44,
+      "96": 74.52,
+      "120": 74.44
+     },
+     "time_h_to_acc": {
+      "50": 5.5,
+      "60": 9.85,
+      "70": 23.0,
+      "75": null,
+      "80": null
+     },
+     "gb_to_acc": {
+      "50": 79.3,
+      "60": 141.8,
+      "70": 331.6,
+      "75": null,
+      "80": null
+     },
+     "acc_at_felix_hit_h": 74.41,
+     "gb_by_fate": {
+      "aggregated": 1715.3,
+      "late": 8.4,
+      "timeout": 0.1,
+      "open": 0.0
+     },
+     "paid_not_used_pct": 0.01,
+     "mean_staleness": 0.32,
+     "slot_busy_pct": null,
+     "slot_held_departed_pct": null,
+     "left_mid_task_pct": 0.5,
+     "slot_time_h": {
+      "useful_compute": 1157.7,
+      "wasted_compute": 0.1,
+      "held_departed": 55.2,
+      "waiting": 1199.5,
+      "idle": 0.0,
+      "await_commit": 0.0
+     },
+     "slot_time_lost_per_departure_s": 100.0,
+     "timeouts": 41,
+     "wire_msgs": 801096,
+     "diverged": false,
+     "kind": "oracle",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 5.59
+     }
+    },
+    "FedDance*": {
+     "status": "miss",
+     "target": 0.8,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 73.44,
+     "peak_acc5": 74.15,
+     "end_h": 120.0,
+     "end_gb": 1994.4,
+     "total_updates": 365325,
+     "acc_at_h": {
+      "6": 55.2,
+      "12": 65.39,
+      "24": 69.13,
+      "48": 71.72,
+      "72": 73.42,
+      "96": 73.92,
+      "120": 73.44
+     },
+     "time_h_to_acc": {
+      "50": 4.33,
+      "60": 8.0,
+      "70": 24.18,
+      "75": null,
+      "80": null
+     },
+     "gb_to_acc": {
+      "50": 75.5,
+      "60": 139.2,
+      "70": 415.8,
+      "75": null,
+      "80": null
+     },
+     "acc_at_felix_hit_h": 73.58,
+     "gb_by_fate": {
+      "discarded": 413.2,
+      "aggregated": 1572.3,
+      "timeout": 4.6,
+      "open": 0.0
+     },
+     "paid_not_used_pct": 21.0,
+     "mean_staleness": 0.0,
+     "slot_busy_pct": null,
+     "slot_held_departed_pct": null,
+     "left_mid_task_pct": 0.46,
+     "slot_time_h": {
+      "useful_compute": 1000.6,
+      "wasted_compute": 569.2,
+      "held_departed": 42.0,
+      "waiting": 789.0,
+      "idle": 0.0,
+      "await_commit": 0.0
+     },
+     "slot_time_lost_per_departure_s": 71.0,
+     "timeouts": 2137,
+     "wire_msgs": 926980,
+     "diverged": false,
+     "kind": "oracle",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 6.42
+     }
+    },
+    "FedAvg*": {
+     "status": "miss",
+     "target": 0.8,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 74.53,
+     "peak_acc5": 74.57,
+     "end_h": 120.0,
+     "end_gb": 1828.6,
+     "total_updates": 334905,
+     "acc_at_h": {
+      "6": 50.58,
+      "12": 63.22,
+      "24": 70.99,
+      "48": 73.45,
+      "72": 74.2,
+      "96": 74.43,
+      "120": 74.53
+     },
+     "time_h_to_acc": {
+      "50": 5.67,
+      "60": 9.84,
+      "70": 21.02,
+      "75": null,
+      "80": null
+     },
+     "gb_to_acc": {
+      "50": 86.0,
+      "60": 149.9,
+      "70": 322.2,
+      "75": null,
+      "80": null
+     },
+     "acc_at_felix_hit_h": 74.09,
+     "gb_by_fate": {
+      "discarded": 377.7,
+      "timeout": 4.9,
+      "aggregated": 1441.4,
+      "open": 0.0
+     },
+     "paid_not_used_pct": 20.98,
+     "mean_staleness": 0.0,
+     "slot_busy_pct": null,
+     "slot_held_departed_pct": null,
+     "left_mid_task_pct": 0.54,
+     "slot_time_h": {
+      "useful_compute": 972.8,
+      "wasted_compute": 633.9,
+      "held_departed": 44.7,
+      "waiting": 816.5,
+      "idle": 0.0,
+      "await_commit": 0.0
+     },
+     "slot_time_lost_per_departure_s": 70.0,
+     "timeouts": 2281,
+     "wire_msgs": 849896,
+     "diverged": false,
+     "kind": "oracle",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 5.91
+     }
+    }
+   },
+   "summary": {
+    "target": 0.8,
+    "felix_first": true,
+    "all_stacks_in": true,
+    "best_deployable": "FedBuff",
+    "best_oracle": "FedBuff*",
+    "vs_best_deployable": {
+     "stack": "FedBuff",
+     "speedup": 1.228,
+     "gb_ratio": 0.879,
+     "gb_saving_pct": 12.1
+    },
+    "vs_best_oracle": {
+     "stack": "FedBuff*",
+     "speedup": 1.24,
+     "gb_ratio": 0.828,
+     "gb_saving_pct": 17.2
+    },
+    "vs_fedbuff": {
+     "stack": "FedBuff",
+     "speedup": 1.228,
+     "gb_ratio": 0.879,
+     "gb_saving_pct": 12.1
+    }
+   }
+  },
+  "s50u": {
+   "label": "Syn-50%",
+   "target": 0.8,
+   "stacks": {
+    "Felix": {
+     "status": "hit",
+     "target": 0.8,
+     "time_h": 72.0,
+     "gb": 3248.9,
+     "updates_to_target": 755050,
+     "updates_per_h": 10487.0,
+     "final_acc": 80.02,
+     "peak_acc5": 80.02,
+     "end_h": 72.0,
+     "end_gb": 3248.9,
+     "total_updates": 755050,
+     "acc_at_h": {
+      "6": 70.82,
+      "12": 73.36,
+      "24": 75.84,
+      "48": 78.03,
+      "72": 79.99,
+      "96": null,
+      "120": null
+     },
+     "time_h_to_acc": {
+      "50": 1.5,
+      "60": 2.5,
+      "70": 5.17,
+      "75": 18.33,
+      "80": 72.0
+     },
+     "gb_to_acc": {
+      "50": 112.9,
+      "60": 185.1,
+      "70": 367.1,
+      "75": 1126.6,
+      "80": 3248.9
+     },
+     "acc_at_felix_hit_h": 80.02,
+     "gb_by_fate": {
+      "aggregated": 3194.3,
+      "late": 54.0,
+      "open": 0.1,
+      "evicted": 0.1
+     },
+     "paid_not_used_pct": 0.01,
+     "mean_staleness": 11.86,
+     "slot_busy_pct": 99.9,
+     "slot_held_departed_pct": 0.0,
+     "left_mid_task_pct": 1.73,
+     "slot_time_h": {
+      "useful_compute": 4315.5,
+      "wasted_compute": 0.8,
+      "held_departed": 0.4,
+      "waiting": 0.0,
+      "idle": 3.4,
+      "await_commit": 0.0
+     },
+     "slot_time_lost_per_departure_s": 0.0,
+     "timeouts": 0,
+     "wire_msgs": 1510328,
+     "diverged": false,
+     "kind": "felix",
+     "n_seeds": 1
+    },
+    "FedBuff": {
+     "status": "hit",
+     "target": 0.8,
+     "time_h": 81.01,
+     "gb": 2422.1,
+     "updates_to_target": 562920,
+     "updates_per_h": 6949.0,
+     "final_acc": 80.05,
+     "peak_acc5": 80.05,
+     "end_h": 81.01,
+     "end_gb": 2422.1,
+     "total_updates": 562921,
+     "acc_at_h": {
+      "6": 57.06,
+      "12": 68.61,
+      "24": 74.33,
+      "48": 77.36,
+      "72": 79.48,
+      "96": null,
+      "120": null
+     },
+     "time_h_to_acc": {
+      "50": 4.0,
+      "60": 7.0,
+      "70": 13.67,
+      "75": 26.5,
+      "80": 81.01
+     },
+     "gb_to_acc": {
+      "50": 187.0,
+      "60": 309.1,
+      "70": 576.2,
+      "75": 1023.3,
+      "80": 2422.1
+     },
+     "acc_at_felix_hit_h": 79.48,
+     "gb_by_fate": {
+      "aggregated": 2399.7,
+      "late": 22.0,
+      "open": 0.1,
+      "timeout": 0.0
+     },
+     "paid_not_used_pct": 0.01,
+     "mean_staleness": 7.44,
+     "slot_busy_pct": 61.7,
+     "slot_held_departed_pct": 34.5,
+     "left_mid_task_pct": 1.71,
+     "slot_time_h": {
+      "useful_compute": 2997.6,
+      "wasted_compute": 0.7,
+      "held_departed": 1677.6,
+      "waiting": 0.0,
+      "idle": 184.5,
+      "await_commit": 0.0
+     },
+     "slot_time_lost_per_departure_s": 626.0,
+     "timeouts": 16,
+     "wire_msgs": 1125989,
+     "diverged": false,
+     "kind": "deployable",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": 1.125,
+      "gb_ratio": 1.341,
+      "gb_saving_pct": -34.1,
+      "acc_gain_pp_at_felix_hit_h": 0.52
+     }
+    },
+    "Oort": {
+     "status": "miss",
+     "target": 0.8,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 74.84,
+     "peak_acc5": 74.93,
+     "end_h": 120.01,
+     "end_gb": 56.0,
+     "total_updates": 11025,
+     "acc_at_h": {
+      "6": 29.67,
+      "12": 42.09,
+      "24": 53.9,
+      "48": 64.1,
+      "72": 69.67,
+      "96": 73.4,
+      "120": 74.84
+     },
+     "time_h_to_acc": {
+      "50": 19.52,
+      "60": 36.09,
+      "70": 73.15,
+      "75": null,
+      "80": null
+     },
+     "gb_to_acc": {
+      "50": 11.4,
+      "60": 20.7,
+      "70": 36.6,
+      "75": null,
+      "80": null
+     },
+     "acc_at_felix_hit_h": 69.76,
+     "gb_by_fate": {
+      "timeout": 2.4,
+      "aggregated": 45.7,
+      "late": 1.8,
+      "discarded": 3.7,
+      "open": 0.0
+     },
+     "paid_not_used_pct": 11.41,
+     "mean_staleness": 0.0,
+     "slot_busy_pct": null,
+     "slot_held_departed_pct": null,
+     "left_mid_task_pct": 13.36,
+     "slot_time_h": {
+      "useful_compute": 332.1,
+      "wasted_compute": 73.1,
+      "held_departed": 403.6,
+      "waiting": 650.9,
+      "idle": 0.0,
+      "await_commit": 0.0
+     },
+     "slot_time_lost_per_departure_s": 836.0,
+     "timeouts": 1120,
+     "wire_msgs": 26012,
+     "diverged": false,
+     "kind": "deployable",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 10.24
+     }
+    },
+    "REFL": {
+     "status": "miss",
+     "target": 0.8,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 74.77,
+     "peak_acc5": 74.84,
+     "end_h": 120.0,
+     "end_gb": 1583.2,
+     "total_updates": 367655,
+     "acc_at_h": {
+      "6": 50.44,
+      "12": 60.95,
+      "24": 68.78,
+      "48": 73.16,
+      "72": 74.13,
+      "96": 74.59,
+      "120": 74.77
+     },
+     "time_h_to_acc": {
+      "50": 5.69,
+      "60": 11.51,
+      "70": 27.84,
+      "75": null,
+      "80": null
+     },
+     "gb_to_acc": {
+      "50": 77.7,
+      "60": 154.1,
+      "70": 370.2,
+      "75": null,
+      "80": null
+     },
+     "acc_at_felix_hit_h": 74.13,
+     "gb_by_fate": {
+      "aggregated": 1563.0,
+      "late": 18.4,
+      "timeout": 1.0,
+      "discarded": 0.1,
+      "open": 0.0
+     },
+     "paid_not_used_pct": 0.07,
+     "mean_staleness": 0.85,
+     "slot_busy_pct": null,
+     "slot_held_departed_pct": null,
+     "left_mid_task_pct": 1.29,
+     "slot_time_h": {
+      "useful_compute": 1005.4,
+      "wasted_compute": 0.7,
+      "held_departed": 106.6,
+      "waiting": 1146.1,
+      "idle": 0.0,
+      "await_commit": 0.0
+     },
+     "slot_time_lost_per_departure_s": 81.0,
+     "timeouts": 464,
+     "wire_msgs": 735880,
+     "diverged": false,
+     "kind": "deployable",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 5.87
+     }
+    },
+    "FedDance": {
+     "status": "miss",
+     "target": 0.8,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 76.17,
+     "peak_acc5": 76.23,
+     "end_h": 120.0,
+     "end_gb": 1410.2,
+     "total_updates": 255945,
+     "acc_at_h": {
+      "6": 47.37,
+      "12": 60.11,
+      "24": 69.59,
+      "48": 73.89,
+      "72": 75.38,
+      "96": 75.98,
+      "120": 76.17
+     },
+     "time_h_to_acc": {
+      "50": 6.69,
+      "60": 11.84,
+      "70": 24.69,
+      "75": 60.51,
+      "80": null
+     },
+     "gb_to_acc": {
+      "50": 85.6,
+      "60": 146.8,
+      "70": 298.5,
+      "75": 706.6,
+      "80": null
+     },
+     "acc_at_felix_hit_h": 75.38,
+     "gb_by_fate": {
+      "discarded": 285.7,
+      "timeout": 11.6,
+      "aggregated": 1101.5,
+      "open": 0.0
+     },
+     "paid_not_used_pct": 21.25,
+     "mean_staleness": 0.0,
+     "slot_busy_pct": null,
+     "slot_held_departed_pct": null,
+     "left_mid_task_pct": 1.44,
+     "slot_time_h": {
+      "useful_compute": 743.7,
+      "wasted_compute": 485.3,
+      "held_departed": 108.7,
+      "waiting": 692.6,
+      "idle": 0.0,
+      "await_commit": 0.0
+     },
+     "slot_time_lost_per_departure_s": 83.0,
+     "timeouts": 5403,
+     "wire_msgs": 655468,
+     "diverged": false,
+     "kind": "deployable",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 4.62
+     }
+    },
+    "FedAvg": {
+     "status": "miss",
+     "target": 0.8,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 74.74,
+     "peak_acc5": 74.84,
+     "end_h": 120.0,
+     "end_gb": 1419.3,
+     "total_updates": 257640,
+     "acc_at_h": {
+      "6": 46.93,
+      "12": 57.87,
+      "24": 68.26,
+      "48": 72.86,
+      "72": 73.96,
+      "96": 74.64,
+      "120": 74.74
+     },
+     "time_h_to_acc": {
+      "50": 7.37,
+      "60": 13.0,
+      "70": 28.52,
+      "75": null,
+      "80": null
+     },
+     "gb_to_acc": {
+      "50": 85.9,
+      "60": 152.4,
+      "70": 338.2,
+      "75": null,
+      "80": null
+     },
+     "acc_at_felix_hit_h": 73.96,
+     "gb_by_fate": {
+      "discarded": 287.5,
+      "aggregated": 1108.8,
+      "timeout": 11.6,
+      "open": 0.0
+     },
+     "paid_not_used_pct": 21.25,
+     "mean_staleness": 0.0,
+     "slot_busy_pct": null,
+     "slot_held_departed_pct": null,
+     "left_mid_task_pct": 1.41,
+     "slot_time_h": {
+      "useful_compute": 741.7,
+      "wasted_compute": 490.0,
+      "held_departed": 107.2,
+      "waiting": 688.2,
+      "idle": 0.0,
+      "await_commit": 0.0
+     },
+     "slot_time_lost_per_departure_s": 83.0,
+     "timeouts": 5411,
+     "wire_msgs": 659714,
+     "diverged": false,
+     "kind": "deployable",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 6.04
+     }
+    },
+    "FedBuff*": {
+     "status": "hit",
+     "target": 0.8,
+     "time_h": 80.5,
+     "gb": 2541.9,
+     "updates_to_target": 590759,
+     "updates_per_h": 7338.0,
+     "final_acc": 80.03,
+     "peak_acc5": 80.03,
+     "end_h": 80.5,
+     "end_gb": 2541.9,
+     "total_updates": 590759,
+     "acc_at_h": {
+      "6": 57.64,
+      "12": 68.77,
+      "24": 74.33,
+      "48": 77.42,
+      "72": 79.42,
+      "96": null,
+      "120": null
+     },
+     "time_h_to_acc": {
+      "50": 4.0,
+      "60": 6.83,
+      "70": 13.17,
+      "75": 27.67,
+      "80": 80.5
+     },
+     "gb_to_acc": {
+      "50": 191.5,
+      "60": 315.9,
+      "70": 578.4,
+      "75": 1117.0,
+      "80": 2541.9
+     },
+     "acc_at_felix_hit_h": 79.42,
+     "gb_by_fate": {
+      "aggregated": 2519.4,
+      "late": 22.1,
+      "open": 0.1,
+      "timeout": 0.0
+     },
+     "paid_not_used_pct": 0.01,
+     "mean_staleness": 7.82,
+     "slot_busy_pct": 64.1,
+     "slot_held_departed_pct": 35.8,
+     "left_mid_task_pct": 1.68,
+     "slot_time_h": {
+      "useful_compute": 3097.5,
+      "wasted_compute": 0.5,
+      "held_departed": 1729.6,
+      "waiting": 0.0,
+      "idle": 2.7,
+      "await_commit": 0.0
+     },
+     "slot_time_lost_per_departure_s": 626.0,
+     "timeouts": 9,
+     "wire_msgs": 1181653,
+     "diverged": false,
+     "kind": "oracle",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": 1.118,
+      "gb_ratio": 1.278,
+      "gb_saving_pct": -27.8,
+      "acc_gain_pp_at_felix_hit_h": 0.58
+     }
+    },
+    "Oort*": {
+     "status": "miss",
+     "target": 0.8,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 74.73,
+     "peak_acc5": 74.73,
+     "end_h": 120.0,
+     "end_gb": 71.6,
+     "total_updates": 13530,
+     "acc_at_h": {
+      "6": 34.65,
+      "12": 53.01,
+      "24": 60.22,
+      "48": 66.26,
+      "72": 70.78,
+      "96": 72.45,
+      "120": 74.58
+     },
+     "time_h_to_acc": {
+      "50": 10.85,
+      "60": 23.65,
+      "70": 67.15,
+      "75": null,
+      "80": null
+     },
+     "gb_to_acc": {
+      "50": 12.5,
+      "60": 20.8,
+      "70": 44.3,
+      "75": null,
+      "80": null
+     },
+     "acc_at_felix_hit_h": 70.78,
+     "gb_by_fate": {
+      "timeout": 4.5,
+      "aggregated": 55.8,
+      "late": 2.5,
+      "discarded": 4.4,
+      "open": 0.0
+     },
+     "paid_not_used_pct": 13.26,
+     "mean_staleness": 0.0,
+     "slot_busy_pct": null,
+     "slot_held_departed_pct": null,
+     "left_mid_task_pct": 16.56,
+     "slot_time_h": {
+      "useful_compute": 452.5,
+      "wasted_compute": 148.4,
+      "held_departed": 583.1,
+      "waiting": 831.4,
+      "idle": 0.0,
+      "await_commit": 0.0
+     },
+     "slot_time_lost_per_departure_s": 762.0,
+     "timeouts": 2074,
+     "wire_msgs": 33276,
+     "diverged": false,
+     "kind": "oracle",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 9.22
+     }
+    },
+    "REFL*": {
+     "status": "miss",
+     "target": 0.8,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 74.7,
+     "peak_acc5": 74.89,
+     "end_h": 120.0,
+     "end_gb": 1697.3,
+     "total_updates": 394369,
+     "acc_at_h": {
+      "6": 51.16,
+      "12": 63.31,
+      "24": 70.2,
+      "48": 74.01,
+      "72": 74.68,
+      "96": 74.67,
+      "120": 74.71
+     },
+     "time_h_to_acc": {
+      "50": 5.68,
+      "60": 10.02,
+      "70": 23.0,
+      "75": null,
+      "80": null
+     },
+     "gb_to_acc": {
+      "50": 79.7,
+      "60": 141.6,
+      "70": 327.7,
+      "75": null,
+      "80": null
+     },
+     "acc_at_felix_hit_h": 74.68,
+     "gb_by_fate": {
+      "aggregated": 1680.9,
+      "timeout": 0.4,
+      "late": 15.8,
+      "open": 0.0
+     },
+     "paid_not_used_pct": 0.02,
+     "mean_staleness": 0.74,
+     "slot_busy_pct": null,
+     "slot_held_departed_pct": null,
+     "left_mid_task_pct": 0.98,
+     "slot_time_h": {
+      "useful_compute": 1128.1,
+      "wasted_compute": 0.5,
+      "held_departed": 105.5,
+      "waiting": 1178.6,
+      "idle": 0.0,
+      "await_commit": 0.0
+     },
+     "slot_time_lost_per_departure_s": 98.0,
+     "timeouts": 192,
+     "wire_msgs": 788904,
+     "diverged": false,
+     "kind": "oracle",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 5.32
+     }
+    },
+    "FedDance*": {
+     "status": "miss",
+     "target": 0.8,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 72.97,
+     "peak_acc5": 73.32,
+     "end_h": 120.0,
+     "end_gb": 2300.8,
+     "total_updates": 418845,
+     "acc_at_h": {
+      "6": 55.64,
+      "12": 65.05,
+      "24": 69.33,
+      "48": 71.65,
+      "72": 72.46,
+      "96": 72.92,
+      "120": 72.97
+     },
+     "time_h_to_acc": {
+      "50": 4.35,
+      "60": 7.85,
+      "70": 26.35,
+      "75": null,
+      "80": null
+     },
+     "gb_to_acc": {
+      "50": 80.8,
+      "60": 143.6,
+      "70": 476.5,
+      "75": null,
+      "80": null
+     },
+     "acc_at_felix_hit_h": 72.46,
+     "gb_by_fate": {
+      "discarded": 476.7,
+      "aggregated": 1802.6,
+      "timeout": 11.0,
+      "open": 0.0
+     },
+     "paid_not_used_pct": 21.29,
+     "mean_staleness": 0.0,
+     "slot_busy_pct": null,
+     "slot_held_departed_pct": null,
+     "left_mid_task_pct": 0.95,
+     "slot_time_h": {
+      "useful_compute": 937.8,
+      "wasted_compute": 554.1,
+      "held_departed": 114.2,
+      "waiting": 796.1,
+      "idle": 0.0,
+      "await_commit": 0.0
+     },
+     "slot_time_lost_per_departure_s": 81.0,
+     "timeouts": 5089,
+     "wire_msgs": 1069388,
+     "diverged": false,
+     "kind": "oracle",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 7.54
+     }
+    },
+    "FedAvg*": {
+     "status": "miss",
+     "target": 0.8,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 74.2,
+     "peak_acc5": 74.23,
+     "end_h": 120.0,
+     "end_gb": 1766.3,
+     "total_updates": 321120,
+     "acc_at_h": {
+      "6": 49.94,
+      "12": 61.9,
+      "24": 69.62,
+      "48": 72.91,
+      "72": 73.89,
+      "96": 74.02,
+      "120": 74.17
+     },
+     "time_h_to_acc": {
+      "50": 6.02,
+      "60": 10.86,
+      "70": 25.52,
+      "75": null,
+      "80": null
+     },
+     "gb_to_acc": {
+      "50": 88.1,
+      "60": 159.4,
+      "70": 375.3,
+      "75": null,
+      "80": null
+     },
+     "acc_at_felix_hit_h": 73.89,
+     "gb_by_fate": {
+      "discarded": 363.0,
+      "aggregated": 1382.0,
+      "timeout": 10.8,
+      "open": 0.0
+     },
+     "paid_not_used_pct": 21.29,
+     "mean_staleness": 0.0,
+     "slot_busy_pct": null,
+     "slot_held_departed_pct": null,
+     "left_mid_task_pct": 1.22,
+     "slot_time_h": {
+      "useful_compute": 923.5,
+      "wasted_compute": 609.1,
+      "held_departed": 106.4,
+      "waiting": 817.1,
+      "idle": 0.0,
+      "await_commit": 0.0
+     },
+     "slot_time_lost_per_departure_s": 77.0,
+     "timeouts": 5003,
+     "wire_msgs": 820962,
+     "diverged": false,
+     "kind": "oracle",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 6.11
+     }
+    }
+   },
+   "summary": {
+    "target": 0.8,
+    "felix_first": true,
+    "all_stacks_in": true,
+    "best_deployable": "FedBuff",
+    "best_oracle": "FedBuff*",
+    "vs_best_deployable": {
+     "stack": "FedBuff",
+     "speedup": 1.125,
+     "gb_ratio": 1.341,
+     "gb_saving_pct": -34.1
+    },
+    "vs_best_oracle": {
+     "stack": "FedBuff*",
+     "speedup": 1.118,
+     "gb_ratio": 1.278,
+     "gb_saving_pct": -27.8
+    },
+    "vs_fedbuff": {
+     "stack": "FedBuff",
+     "speedup": 1.125,
+     "gb_ratio": 1.341,
+     "gb_saving_pct": -34.1
+    }
+   },
+   "ablations": {
+    "ladder": {
+     "+ Notify": {
+      "arm": "b1",
+      "status": "hit",
+      "time_h": 90.5,
+      "gb": 4797.9,
+      "final_acc": 80.05,
+      "peak_acc5": 80.05,
+      "end_h": 90.5,
+      "mean_staleness": 11.92,
+      "paid_not_used_pct": 0.01,
+      "time_h_to_acc": {
+       "50": 3.0,
+       "60": 5.0,
+       "70": 11.17,
+       "75": 26.5,
+       "80": 90.5
+      },
+      "gb_to_acc": {
+       "50": 247.3,
+       "60": 401.5,
+       "70": 856.6,
+       "75": 1848.6,
+       "80": 4797.9
+      },
+      "acc_at_h": {
+       "6": 62.92,
+       "12": 70.69,
+       "24": 74.46,
+       "48": 77.02,
+       "72": 78.86,
+       "96": null,
+       "120": null
+      },
+      "vs_felix": {
+       "time_ratio": 1.257,
+       "gb_ratio": 1.477
+      }
+     },
+     "+ Select": {
+      "arm": "uo_o",
+      "status": "hit",
+      "time_h": 90.67,
+      "gb": 3688.7,
+      "final_acc": 80.01,
+      "peak_acc5": 80.01,
+      "end_h": 90.67,
+      "mean_staleness": 11.9,
+      "paid_not_used_pct": 0.01,
+      "time_h_to_acc": {
+       "50": 2.5,
+       "60": 4.0,
+       "70": 9.33,
+       "75": 26.0,
+       "80": 90.67
+      },
+      "gb_to_acc": {
+       "50": 184.5,
+       "60": 291.1,
+       "70": 629.6,
+       "75": 1481.0,
+       "80": 3688.7
+      },
+      "acc_at_h": {
+       "6": 65.22,
+       "12": 71.77,
+       "24": 74.6,
+       "48": 77.69,
+       "72": 79.05,
+       "96": null,
+       "120": null
+      },
+      "vs_felix": {
+       "time_ratio": 1.259,
+       "gb_ratio": 1.135
+      }
+     },
+     "+ Agg (c = 60)": {
+      "arm": "fn",
+      "status": "hit",
+      "time_h": 73.17,
+      "gb": 3280.7,
+      "final_acc": 80.02,
+      "peak_acc5": 80.02,
+      "end_h": 73.17,
+      "mean_staleness": 11.94,
+      "paid_not_used_pct": 0.01,
+      "time_h_to_acc": {
+       "50": 1.5,
+       "60": 2.5,
+       "70": 5.17,
+       "75": 20.17,
+       "80": 73.17
+      },
+      "gb_to_acc": {
+       "50": 112.8,
+       "60": 185.0,
+       "70": 366.9,
+       "75": 1220.7,
+       "80": 3280.7
+      },
+      "acc_at_h": {
+       "6": 70.85,
+       "12": 73.65,
+       "24": 75.93,
+       "48": 78.03,
+       "72": 79.97,
+       "96": null,
+       "120": null
+      },
+      "vs_felix": {
+       "time_ratio": 1.016,
+       "gb_ratio": 1.01
+      }
+     }
+    },
+    "swap_availability": {
+     "Check-in": {
+      "arm": "fx_ck",
+      "status": "hit",
+      "time_h": 73.52,
+      "gb": 677.7,
+      "final_acc": 80.01,
+      "peak_acc5": 80.01,
+      "end_h": 73.52,
+      "mean_staleness": 3.21,
+      "paid_not_used_pct": 0.01,
+      "time_h_to_acc": {
+       "50": 2.67,
+       "60": 4.84,
+       "70": 10.84,
+       "75": 22.84,
+       "80": 73.52
+      },
+      "gb_to_acc": {
+       "50": 99.7,
+       "60": 153.5,
+       "70": 267.4,
+       "75": 407.1,
+       "80": 677.7
+      },
+      "acc_at_h": {
+       "6": 62.68,
+       "12": 70.82,
+       "24": 75.52,
+       "48": 77.98,
+       "72": 79.81,
+       "96": null,
+       "120": null
+      },
+      "vs_felix": {
+       "time_ratio": 1.021,
+       "gb_ratio": 0.209
+      }
+     },
+     "Oracle": {
+      "arm": "fx_or",
+      "status": "hit",
+      "time_h": 66.84,
+      "gb": 1706.5,
+      "final_acc": 80.01,
+      "peak_acc5": 80.01,
+      "end_h": 66.84,
+      "mean_staleness": 7.83,
+      "paid_not_used_pct": 0.01,
+      "time_h_to_acc": {
+       "50": 2.0,
+       "60": 3.5,
+       "70": 6.83,
+       "75": 18.17,
+       "80": 66.84
+      },
+      "gb_to_acc": {
+       "50": 87.0,
+       "60": 147.8,
+       "70": 272.6,
+       "75": 638.6,
+       "80": 1706.5
+      },
+      "acc_at_h": {
+       "6": 68.32,
+       "12": 73.22,
+       "24": 76.08,
+       "48": 78.6,
+       "72": null,
+       "96": null,
+       "120": null
+      },
+      "vs_felix": {
+       "time_ratio": 0.928,
+       "gb_ratio": 0.525
+      }
+     }
+    },
+    "swap_selection": {
+     "Uniform": {
+      "arm": "fx_rnd",
+      "status": "hit",
+      "time_h": 64.83,
+      "gb": 3779.7,
+      "final_acc": 80.06,
+      "peak_acc5": 80.06,
+      "end_h": 64.83,
+      "mean_staleness": 12.02,
+      "paid_not_used_pct": 0.01,
+      "time_h_to_acc": {
+       "50": 1.83,
+       "60": 2.83,
+       "70": 5.67,
+       "75": 17.67,
+       "80": 64.83
+      },
+      "gb_to_acc": {
+       "50": 153.2,
+       "60": 233.2,
+       "70": 451.1,
+       "75": 1296.4,
+       "80": 3779.7
+      },
+      "acc_at_h": {
+       "6": 70.3,
+       "12": 73.47,
+       "24": 76.09,
+       "48": 78.4,
+       "72": null,
+       "96": null,
+       "120": null
+      },
+      "vs_felix": {
+       "time_ratio": 0.9,
+       "gb_ratio": 1.163
+      }
+     },
+     "Oort's selector": {
+      "arm": "fx_oort",
+      "status": "hit",
+      "time_h": 71.5,
+      "gb": 3186.0,
+      "final_acc": 80.0,
+      "peak_acc5": 80.0,
+      "end_h": 71.5,
+      "mean_staleness": 11.89,
+      "paid_not_used_pct": 0.01,
+      "time_h_to_acc": {
+       "50": 1.33,
+       "60": 2.17,
+       "70": 5.5,
+       "75": 20.5,
+       "80": 71.5
+      },
+      "gb_to_acc": {
+       "50": 103.1,
+       "60": 163.7,
+       "70": 378.1,
+       "75": 1216.8,
+       "80": 3186.0
+      },
+      "acc_at_h": {
+       "6": 70.54,
+       "12": 72.99,
+       "24": 75.23,
+       "48": 77.79,
+       "72": null,
+       "96": null,
+       "120": null
+      },
+      "vs_felix": {
+       "time_ratio": 0.993,
+       "gb_ratio": 0.981
+      }
+     }
+    },
+    "swap_aggregation": {
+     "1/\u221a(1+\u03c4)": {
+      "arm": "fx_rold",
+      "status": "hit",
+      "time_h": 89.17,
+      "gb": 3641.7,
+      "final_acc": 80.02,
+      "peak_acc5": 80.02,
+      "end_h": 89.17,
+      "mean_staleness": 11.9,
+      "paid_not_used_pct": 0.01,
+      "time_h_to_acc": {
+       "50": 2.5,
+       "60": 4.17,
+       "70": 9.83,
+       "75": 27.5,
+       "80": 89.17
+      },
+      "gb_to_acc": {
+       "50": 184.7,
+       "60": 302.8,
+       "70": 659.0,
+       "75": 1547.6,
+       "80": 3641.7
+      },
+      "acc_at_h": {
+       "6": 65.17,
+       "12": 71.77,
+       "24": 74.69,
+       "48": 77.39,
+       "72": 78.8,
+       "96": null,
+       "120": null
+      },
+      "vs_felix": {
+       "time_ratio": 1.238,
+       "gb_ratio": 1.121
+      }
+     },
+     "1/(1+\u03c4)": {
+      "arm": "fx_r1",
+      "status": "hit",
+      "time_h": 117.0,
+      "gb": 4298.7,
+      "final_acc": 80.09,
+      "peak_acc5": 80.09,
+      "end_h": 117.0,
+      "mean_staleness": 11.91,
+      "paid_not_used_pct": 0.01,
+      "time_h_to_acc": {
+       "50": 4.67,
+       "60": 8.17,
+       "70": 18.0,
+       "75": 41.33,
+       "80": 117.0
+      },
+      "gb_to_acc": {
+       "50": 338.7,
+       "60": 567.3,
+       "70": 1122.6,
+       "75": 2139.6,
+       "80": 4298.7
+      },
+      "acc_at_h": {
+       "6": 54.3,
+       "12": 65.6,
+       "24": 72.28,
+       "48": 75.65,
+       "72": 77.64,
+       "96": 79.33,
+       "120": null
+      },
+      "vs_felix": {
+       "time_ratio": 1.625,
+       "gb_ratio": 1.323
+      }
+     }
+    },
+    "swap_concurrency": {
+     "Fixed c = 30": {
+      "arm": "fx_cfix",
+      "status": "hit",
+      "time_h": 63.84,
+      "gb": 1209.4,
+      "final_acc": 80.02,
+      "peak_acc5": 80.02,
+      "end_h": 63.84,
+      "mean_staleness": 5.89,
+      "paid_not_used_pct": 0.01,
+      "time_h_to_acc": {
+       "50": 2.5,
+       "60": 4.33,
+       "70": 8.5,
+       "75": 18.34,
+       "80": 63.84
+      },
+      "gb_to_acc": {
+       "50": 75.6,
+       "60": 128.7,
+       "70": 240.7,
+       "75": 470.7,
+       "80": 1209.4
+      },
+      "acc_at_h": {
+       "6": 65.05,
+       "12": 72.92,
+       "24": 75.98,
+       "48": 78.45,
+       "72": null,
+       "96": null,
+       "120": null
+      },
+      "vs_felix": {
+       "time_ratio": 0.887,
+       "gb_ratio": 0.372
+      }
+     },
+     "c \u221d eligible": {
+      "arm": "fx_ca",
+      "status": "hit",
+      "time_h": 63.84,
+      "gb": 1198.1,
+      "final_acc": 80.02,
+      "peak_acc5": 80.02,
+      "end_h": 63.84,
+      "mean_staleness": 5.85,
+      "paid_not_used_pct": 0.01,
+      "time_h_to_acc": {
+       "50": 2.5,
+       "60": 4.34,
+       "70": 8.67,
+       "75": 18.17,
+       "80": 63.84
+      },
+      "gb_to_acc": {
+       "50": 76.1,
+       "60": 128.1,
+       "70": 242.9,
+       "75": 462.7,
+       "80": 1198.1
+      },
+      "acc_at_h": {
+       "6": 64.87,
+       "12": 73.06,
+       "24": 75.89,
+       "48": 78.73,
+       "72": null,
+       "96": null,
+       "120": null
+      },
+      "vs_felix": {
+       "time_ratio": 0.887,
+       "gb_ratio": 0.369
+      }
+     }
+    },
+    "rejected": {
+     "+ UCB": {
+      "arm": "fx_ucb",
+      "status": "hit",
+      "time_h": 79.5,
+      "gb": 3529.9,
+      "final_acc": 80.0,
+      "peak_acc5": 80.0,
+      "end_h": 79.5,
+      "mean_staleness": 11.95,
+      "paid_not_used_pct": 0.01,
+      "time_h_to_acc": {
+       "50": 1.67,
+       "60": 2.5,
+       "70": 5.17,
+       "75": 15.17,
+       "80": 79.5
+      },
+      "gb_to_acc": {
+       "50": 125.6,
+       "60": 185.9,
+       "70": 369.7,
+       "75": 966.8,
+       "80": 3529.9
+      },
+      "acc_at_h": {
+       "6": 70.96,
+       "12": 74.34,
+       "24": 76.13,
+       "48": 78.35,
+       "72": 79.74,
+       "96": null,
+       "120": null
+      },
+      "vs_felix": {
+       "time_ratio": 1.104,
+       "gb_ratio": 1.086
+      }
+     },
+     "2 epochs": {
+      "arm": "fx_e2",
+      "status": "hit",
+      "time_h": 86.67,
+      "gb": 2345.4,
+      "final_acc": 80.02,
+      "peak_acc5": 80.02,
+      "end_h": 86.67,
+      "mean_staleness": 11.95,
+      "paid_not_used_pct": 0.01,
+      "time_h_to_acc": {
+       "50": 1.5,
+       "60": 2.33,
+       "70": 6.5,
+       "75": 23.33,
+       "80": 86.67
+      },
+      "gb_to_acc": {
+       "50": 79.2,
+       "60": 120.5,
+       "70": 311.7,
+       "75": 922.8,
+       "80": 2345.4
+      },
+      "acc_at_h": {
+       "6": 69.41,
+       "12": 72.15,
+       "24": 75.17,
+       "48": 77.59,
+       "72": 79.52,
+       "96": null,
+       "120": null
+      },
+      "vs_felix": {
+       "time_ratio": 1.204,
+       "gb_ratio": 0.722
+      }
+     }
+    }
+   }
+  },
+  "smu": {
+   "label": "MobiPerf",
+   "target": 0.75,
+   "stacks": {
+    "Felix": {
+     "status": "hit",
+     "target": 0.75,
+     "time_h": 95.18,
+     "gb": 2276.9,
+     "updates_to_target": 529083,
+     "updates_per_h": 5559.0,
+     "final_acc": 75.06,
+     "peak_acc5": 75.96,
+     "end_h": 120.01,
+     "end_gb": 2521.6,
+     "total_updates": 585950,
+     "acc_at_h": {
+      "6": 56.63,
+      "12": 59.62,
+      "24": 65.18,
+      "48": 70.76,
+      "72": 73.33,
+      "96": 75.41,
+      "120": 75.06
+     },
+     "time_h_to_acc": {
+      "50": 2.33,
+      "60": 12.84,
+      "70": 44.67,
+      "75": 95.18,
+      "80": null
+     },
+     "gb_to_acc": {
+      "50": 216.8,
+      "60": 668.9,
+      "70": 1536.8,
+      "75": 2276.9,
+      "80": null
+     },
+     "acc_at_felix_hit_h": 75.02,
+     "gb_by_fate": {
+      "aggregated": 2510.9,
+      "late": 9.9,
+      "evicted": 0.3,
+      "open": 0.1
+     },
+     "paid_not_used_pct": 0.01,
+     "mean_staleness": 9.89,
+     "slot_busy_pct": 99.9,
+     "slot_held_departed_pct": 0.0,
+     "left_mid_task_pct": 0.46,
+     "slot_time_h": {
+      "useful_compute": 3263.2,
+      "wasted_compute": 1.3,
+      "held_departed": 1.6,
+      "waiting": 0.0,
+      "idle": 0.0,
+      "await_commit": 3.0
+     },
+     "slot_time_lost_per_departure_s": 2.0,
+     "timeouts": 0,
+     "wire_msgs": 1172227,
+     "diverged": false,
+     "kind": "felix",
+     "n_seeds": 1
+    },
+    "FedBuff": {
+     "status": "miss",
+     "target": 0.75,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 73.55,
+     "peak_acc5": 74.13,
+     "end_h": 120.0,
+     "end_gb": 6047.3,
+     "total_updates": 1405340,
+     "acc_at_h": {
+      "6": 54.83,
+      "12": 55.97,
+      "24": 61.79,
+      "48": 68.29,
+      "72": 71.29,
+      "96": 73.51,
+      "120": 73.48
+     },
+     "time_h_to_acc": {
+      "50": 4.17,
+      "60": 21.34,
+      "70": 59.0,
+      "75": null,
+      "80": null
+     },
+     "gb_to_acc": {
+      "50": 424.1,
+      "60": 1954.1,
+      "70": 4148.2,
+      "75": null,
+      "80": null
+     },
+     "acc_at_felix_hit_h": 73.09,
+     "gb_by_fate": {
+      "aggregated": 6036.6,
+      "late": 9.3,
+      "timeout": 0.6,
+      "open": 0.0
+     },
+     "paid_not_used_pct": 0.01,
+     "mean_staleness": 16.12,
+     "slot_busy_pct": 69.8,
+     "slot_held_departed_pct": 6.7,
+     "left_mid_task_pct": 0.33,
+     "slot_time_h": {
+      "useful_compute": 5025.4,
+      "wasted_compute": 1.5,
+      "held_departed": 484.5,
+      "waiting": 0.0,
+      "idle": 1688.6,
+      "await_commit": 0.0
+     },
+     "slot_time_lost_per_departure_s": 378.0,
+     "timeouts": 258,
+     "wire_msgs": 2811228,
+     "diverged": false,
+     "kind": "deployable",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 1.91
+     }
+    },
+    "Oort": {
+     "status": "miss",
+     "target": 0.75,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 68.98,
+     "peak_acc5": 70.44,
+     "end_h": 120.06,
+     "end_gb": 66.7,
+     "total_updates": 14430,
+     "acc_at_h": {
+      "6": 27.73,
+      "12": 40.29,
+      "24": 51.05,
+      "48": 62.05,
+      "72": 66.57,
+      "96": 69.55,
+      "120": 68.97
+     },
+     "time_h_to_acc": {
+      "50": 23.16,
+      "60": 43.78,
+      "70": 100.04,
+      "75": null,
+      "80": null
+     },
+     "gb_to_acc": {
+      "50": 14.5,
+      "60": 26.3,
+      "70": 55.3,
+      "75": null,
+      "80": null
+     },
+     "acc_at_felix_hit_h": 69.35,
+     "gb_by_fate": {
+      "aggregated": 62.1,
+      "discarded": 3.2,
+      "timeout": 0.7,
+      "late": 0.0,
+      "open": 0.0
+     },
+     "paid_not_used_pct": 5.95,
+     "mean_staleness": 0.0,
+     "slot_busy_pct": null,
+     "slot_held_departed_pct": null,
+     "left_mid_task_pct": 3.32,
+     "slot_time_h": {
+      "useful_compute": 528.2,
+      "wasted_compute": 72.0,
+      "held_departed": 92.6,
+      "waiting": 794.4,
+      "idle": 0.0,
+      "await_commit": 0.0
+     },
+     "slot_time_lost_per_departure_s": 648.0,
+     "timeouts": 329,
+     "wire_msgs": 31016,
+     "diverged": false,
+     "kind": "deployable",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 5.65
+     }
+    },
+    "REFL": {
+     "status": "miss",
+     "target": 0.75,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 68.29,
+     "peak_acc5": 70.59,
+     "end_h": 120.0,
+     "end_gb": 2049.6,
+     "total_updates": 476045,
+     "acc_at_h": {
+      "6": 48.18,
+      "12": 53.75,
+      "24": 62.72,
+      "48": 67.94,
+      "72": 69.97,
+      "96": 70.18,
+      "120": 68.48
+     },
+     "time_h_to_acc": {
+      "50": 7.0,
+      "60": 21.17,
+      "70": 72.0,
+      "75": null,
+      "80": null
+     },
+     "gb_to_acc": {
+      "50": 103.1,
+      "60": 344.9,
+      "70": 1124.3,
+      "75": null,
+      "80": null
+     },
+     "acc_at_felix_hit_h": 70.07,
+     "gb_by_fate": {
+      "aggregated": 2040.8,
+      "late": 7.9,
+      "timeout": 0.6,
+      "open": 0.0
+     },
+     "paid_not_used_pct": 0.03,
+     "mean_staleness": 4.96,
+     "slot_busy_pct": null,
+     "slot_held_departed_pct": null,
+     "left_mid_task_pct": 0.58,
+     "slot_time_h": {
+      "useful_compute": 1157.4,
+      "wasted_compute": 0.2,
+      "held_departed": 43.8,
+      "waiting": 1151.4,
+      "idle": 0.0,
+      "await_commit": 0.0
+     },
+     "slot_time_lost_per_departure_s": 57.0,
+     "timeouts": 282,
+     "wire_msgs": 952650,
+     "diverged": false,
+     "kind": "deployable",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 4.93
+     }
+    },
+    "FedDance": {
+     "status": "miss",
+     "target": 0.75,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 70.9,
+     "peak_acc5": 72.27,
+     "end_h": 120.0,
+     "end_gb": 1834.9,
+     "total_updates": 336735,
+     "acc_at_h": {
+      "6": 51.25,
+      "12": 58.81,
+      "24": 64.61,
+      "48": 70.18,
+      "72": 71.31,
+      "96": 71.6,
+      "120": 70.9
+     },
+     "time_h_to_acc": {
+      "50": 5.33,
+      "60": 13.17,
+      "70": 43.67,
+      "75": null,
+      "80": null
+     },
+     "gb_to_acc": {
+      "50": 80.4,
+      "60": 190.2,
+      "70": 650.4,
+      "75": null,
+      "80": null
+     },
+     "acc_at_felix_hit_h": 71.39,
+     "gb_by_fate": {
+      "discarded": 382.5,
+      "aggregated": 1449.2,
+      "timeout": 1.7,
+      "open": 0.0
+     },
+     "paid_not_used_pct": 20.96,
+     "mean_staleness": 0.0,
+     "slot_busy_pct": null,
+     "slot_held_departed_pct": null,
+     "left_mid_task_pct": 0.3,
+     "slot_time_h": {
+      "useful_compute": 922.2,
+      "wasted_compute": 574.7,
+      "held_departed": 18.3,
+      "waiting": 683.6,
+      "idle": 0.0,
+      "await_commit": 0.0
+     },
+     "slot_time_lost_per_departure_s": 52.0,
+     "timeouts": 806,
+     "wire_msgs": 852856,
+     "diverged": false,
+     "kind": "deployable",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 3.61
+     }
+    },
+    "FedAvg": {
+     "status": "miss",
+     "target": 0.75,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 68.48,
+     "peak_acc5": 70.15,
+     "end_h": 120.0,
+     "end_gb": 1842.6,
+     "total_updates": 338175,
+     "acc_at_h": {
+      "6": 49.15,
+      "12": 56.31,
+      "24": 63.76,
+      "48": 68.37,
+      "72": 69.2,
+      "96": 69.48,
+      "120": 68.59
+     },
+     "time_h_to_acc": {
+      "50": 6.33,
+      "60": 15.0,
+      "70": 77.67,
+      "75": null,
+      "80": null
+     },
+     "gb_to_acc": {
+      "50": 91.3,
+      "60": 215.3,
+      "70": 1151.7,
+      "75": null,
+      "80": null
+     },
+     "acc_at_felix_hit_h": 69.34,
+     "gb_by_fate": {
+      "discarded": 383.9,
+      "timeout": 1.8,
+      "aggregated": 1455.4,
+      "open": 0.0
+     },
+     "paid_not_used_pct": 20.95,
+     "mean_staleness": 0.0,
+     "slot_busy_pct": null,
+     "slot_held_departed_pct": null,
+     "left_mid_task_pct": 0.31,
+     "slot_time_h": {
+      "useful_compute": 913.6,
+      "wasted_compute": 592.2,
+      "held_departed": 18.9,
+      "waiting": 678.4,
+      "idle": 0.0,
+      "await_commit": 0.0
+     },
+     "slot_time_lost_per_departure_s": 51.0,
+     "timeouts": 841,
+     "wire_msgs": 856462,
+     "diverged": false,
+     "kind": "deployable",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 5.66
+     }
+    },
+    "FedBuff*": {
+     "status": "miss",
+     "target": 0.75,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 73.86,
+     "peak_acc5": 74.64,
+     "end_h": 120.0,
+     "end_gb": 6193.8,
+     "total_updates": 1439430,
+     "acc_at_h": {
+      "6": 54.6,
+      "12": 56.64,
+      "24": 61.58,
+      "48": 68.25,
+      "72": 71.34,
+      "96": 73.38,
+      "120": 73.8
+     },
+     "time_h_to_acc": {
+      "50": 4.0,
+      "60": 16.5,
+      "70": 60.17,
+      "75": null,
+      "80": null
+     },
+     "gb_to_acc": {
+      "50": 418.5,
+      "60": 1710.3,
+      "70": 4348.8,
+      "75": null,
+      "80": null
+     },
+     "acc_at_felix_hit_h": 73.12,
+     "gb_by_fate": {
+      "aggregated": 6184.1,
+      "late": 8.5,
+      "timeout": 0.5,
+      "open": 0.0
+     },
+     "paid_not_used_pct": 0.01,
+     "mean_staleness": 15.21,
+     "slot_busy_pct": 70.5,
+     "slot_held_departed_pct": 6.1,
+     "left_mid_task_pct": 0.29,
+     "slot_time_h": {
+      "useful_compute": 5074.4,
+      "wasted_compute": 1.6,
+      "held_departed": 436.6,
+      "waiting": 0.0,
+      "idle": 1485.2,
+      "await_commit": 202.3
+     },
+     "slot_time_lost_per_departure_s": 373.0,
+     "timeouts": 218,
+     "wire_msgs": 2879328,
+     "diverged": false,
+     "kind": "oracle",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 1.88
+     }
+    },
+    "Oort*": {
+     "status": "miss",
+     "target": 0.75,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 71.31,
+     "peak_acc5": 72.95,
+     "end_h": 120.02,
+     "end_gb": 90.0,
+     "total_updates": 19485,
+     "acc_at_h": {
+      "6": 38.25,
+      "12": 46.93,
+      "24": 56.06,
+      "48": 66.06,
+      "72": 69.83,
+      "96": 72.39,
+      "120": 71.34
+     },
+     "time_h_to_acc": {
+      "50": 14.4,
+      "60": 29.86,
+      "70": 70.04,
+      "75": null,
+      "80": null
+     },
+     "gb_to_acc": {
+      "50": 13.4,
+      "60": 25.4,
+      "70": 54.0,
+      "75": null,
+      "80": null
+     },
+     "acc_at_felix_hit_h": 72.16,
+     "gb_by_fate": {
+      "aggregated": 83.8,
+      "discarded": 4.5,
+      "timeout": 0.8,
+      "late": 0.0,
+      "open": 0.0
+     },
+     "paid_not_used_pct": 5.93,
+     "mean_staleness": 0.0,
+     "slot_busy_pct": null,
+     "slot_held_departed_pct": null,
+     "left_mid_task_pct": 2.64,
+     "slot_time_h": {
+      "useful_compute": 759.3,
+      "wasted_compute": 107.5,
+      "held_departed": 98.0,
+      "waiting": 992.2,
+      "idle": 0.0,
+      "await_commit": 0.0
+     },
+     "slot_time_lost_per_departure_s": 639.0,
+     "timeouts": 381,
+     "wire_msgs": 41810,
+     "diverged": false,
+     "kind": "oracle",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 2.84
+     }
+    },
+    "REFL*": {
+     "status": "miss",
+     "target": 0.75,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 70.04,
+     "peak_acc5": 71.55,
+     "end_h": 120.0,
+     "end_gb": 2075.6,
+     "total_updates": 482247,
+     "acc_at_h": {
+      "6": 51.76,
+      "12": 58.84,
+      "24": 65.91,
+      "48": 70.41,
+      "72": 71.05,
+      "96": 71.11,
+      "120": 70.14
+     },
+     "time_h_to_acc": {
+      "50": 5.01,
+      "60": 13.17,
+      "70": 41.67,
+      "75": null,
+      "80": null
+     },
+     "gb_to_acc": {
+      "50": 76.7,
+      "60": 201.6,
+      "70": 686.9,
+      "75": null,
+      "80": null
+     },
+     "acc_at_felix_hit_h": 71.11,
+     "gb_by_fate": {
+      "aggregated": 2072.7,
+      "late": 2.7,
+      "timeout": 0.2,
+      "open": 0.0
+     },
+     "paid_not_used_pct": 0.01,
+     "mean_staleness": 1.69,
+     "slot_busy_pct": null,
+     "slot_held_departed_pct": null,
+     "left_mid_task_pct": 0.23,
+     "slot_time_h": {
+      "useful_compute": 1248.8,
+      "wasted_compute": 0.2,
+      "held_departed": 15.9,
+      "waiting": 1175.5,
+      "idle": 0.0,
+      "await_commit": 0.0
+     },
+     "slot_time_lost_per_departure_s": 51.0,
+     "timeouts": 107,
+     "wire_msgs": 964712,
+     "diverged": false,
+     "kind": "oracle",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 3.89
+     }
+    },
+    "FedDance*": {
+     "status": "miss",
+     "target": 0.75,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 60.9,
+     "peak_acc5": 63.47,
+     "end_h": 120.0,
+     "end_gb": 2963.1,
+     "total_updates": 543735,
+     "acc_at_h": {
+      "6": 48.72,
+      "12": 52.19,
+      "24": 55.92,
+      "48": 61.26,
+      "72": 62.91,
+      "96": 62.51,
+      "120": 60.95
+     },
+     "time_h_to_acc": {
+      "50": 4.83,
+      "60": 37.33,
+      "70": null,
+      "75": null,
+      "80": null
+     },
+     "gb_to_acc": {
+      "50": 117.3,
+      "60": 858.5,
+      "70": null,
+      "75": null,
+      "80": null
+     },
+     "acc_at_felix_hit_h": 62.39,
+     "gb_by_fate": {
+      "discarded": 620.0,
+      "timeout": 1.7,
+      "aggregated": 2340.1,
+      "open": 0.0
+     },
+     "paid_not_used_pct": 20.99,
+     "mean_staleness": 0.0,
+     "slot_busy_pct": null,
+     "slot_held_departed_pct": null,
+     "left_mid_task_pct": 0.2,
+     "slot_time_h": {
+      "useful_compute": 1031.1,
+      "wasted_compute": 619.5,
+      "held_departed": 17.5,
+      "waiting": 763.5,
+      "idle": 0.0,
+      "await_commit": 0.0
+     },
+     "slot_time_lost_per_departure_s": 46.0,
+     "timeouts": 783,
+     "wire_msgs": 1377180,
+     "diverged": false,
+     "kind": "oracle",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 12.61
+     }
+    },
+    "FedAvg*": {
+     "status": "miss",
+     "target": 0.75,
+     "time_h": null,
+     "gb": null,
+     "updates_to_target": null,
+     "updates_per_h": null,
+     "final_acc": 67.49,
+     "peak_acc5": 69.21,
+     "end_h": 120.0,
+     "end_gb": 2082.9,
+     "total_updates": 382245,
+     "acc_at_h": {
+      "6": 50.79,
+      "12": 57.04,
+      "24": 63.14,
+      "48": 67.56,
+      "72": 68.3,
+      "96": 68.57,
+      "120": 67.49
+     },
+     "time_h_to_acc": {
+      "50": 5.33,
+      "60": 14.5,
+      "70": null,
+      "75": null,
+      "80": null
+     },
+     "gb_to_acc": {
+      "50": 88.7,
+      "60": 234.8,
+      "70": null,
+      "75": null,
+      "80": null
+     },
+     "acc_at_felix_hit_h": 68.68,
+     "gb_by_fate": {
+      "discarded": 434.5,
+      "timeout": 1.8,
+      "aggregated": 1645.1,
+      "open": 0.0
+     },
+     "paid_not_used_pct": 20.96,
+     "mean_staleness": 0.0,
+     "slot_busy_pct": null,
+     "slot_held_departed_pct": null,
+     "left_mid_task_pct": 0.28,
+     "slot_time_h": {
+      "useful_compute": 1031.8,
+      "wasted_compute": 667.1,
+      "held_departed": 19.0,
+      "waiting": 763.5,
+      "idle": 0.0,
+      "await_commit": 0.0
+     },
+     "slot_time_lost_per_departure_s": 50.0,
+     "timeouts": 854,
+     "wire_msgs": 968118,
+     "diverged": false,
+     "kind": "oracle",
+     "n_seeds": 1,
+     "felix_vs_this": {
+      "speedup": null,
+      "gb_ratio": null,
+      "gb_saving_pct": null,
+      "acc_gain_pp_at_felix_hit_h": 6.32
+     }
+    }
+   },
+   "summary": {
+    "target": 0.75,
+    "felix_first": true,
+    "all_stacks_in": true,
+    "best_deployable": null,
+    "best_oracle": null,
+    "vs_fedbuff": {
+     "stack": "FedBuff",
+     "speedup": null,
+     "gb_ratio": null,
+     "gb_saving_pct": null
+    }
+   },
+   "ablations": {
+    "ladder": {
+     "+ Notify": {
+      "arm": "b1",
+      "status": "miss",
+      "time_h": null,
+      "gb": null,
+      "final_acc": 73.75,
+      "peak_acc5": 74.27,
+      "end_h": 120.0,
+      "mean_staleness": 15.53,
+      "paid_not_used_pct": 0.01,
+      "time_h_to_acc": {
+       "50": 4.17,
+       "60": 21.0,
+       "70": 61.17,
+       "75": null,
+       "80": null
+      },
+      "gb_to_acc": {
+       "50": 460.7,
+       "60": 2089.4,
+       "70": 4552.7,
+       "75": null,
+       "80": null
+      },
+      "acc_at_h": {
+       "6": 54.43,
+       "12": 56.69,
+       "24": 61.37,
+       "48": 68.39,
+       "72": 71.45,
+       "96": 73.66,
+       "120": 73.81
+      },
+      "vs_felix": {
+       "time_ratio": null,
+       "gb_ratio": null
+      }
+     },
+     "+ Select": {
+      "arm": "uo_o",
+      "status": "miss",
+      "time_h": null,
+      "gb": null,
+      "final_acc": 72.79,
+      "peak_acc5": 74.53,
+      "end_h": 120.0,
+      "mean_staleness": 15.66,
+      "paid_not_used_pct": 0.01,
+      "time_h_to_acc": {
+       "50": 4.0,
+       "60": 21.0,
+       "70": 59.5,
+       "75": null,
+       "80": null
+      },
+      "gb_to_acc": {
+       "50": 441.0,
+       "60": 2078.5,
+       "70": 4418.8,
+       "75": null,
+       "80": null
+      },
+      "acc_at_h": {
+       "6": 54.52,
+       "12": 56.45,
+       "24": 61.67,
+       "48": 68.13,
+       "72": 71.0,
+       "96": 73.27,
+       "120": 72.76
+      },
+      "vs_felix": {
+       "time_ratio": null,
+       "gb_ratio": null
+      }
+     },
+     "+ Agg (c = 60)": {
+      "arm": "fn",
+      "status": "hit",
+      "time_h": 100.84,
+      "gb": 5805.5,
+      "final_acc": 75.17,
+      "peak_acc5": 75.25,
+      "end_h": 103.3,
+      "mean_staleness": 15.96,
+      "paid_not_used_pct": 0.01,
+      "time_h_to_acc": {
+       "50": 2.5,
+       "60": 12.83,
+       "70": 49.0,
+       "75": 100.84,
+       "80": null
+      },
+      "gb_to_acc": {
+       "50": 285.7,
+       "60": 1373.0,
+       "70": 3958.7,
+       "75": 5805.5,
+       "80": null
+      },
+      "acc_at_h": {
+       "6": 56.72,
+       "12": 59.22,
+       "24": 64.3,
+       "48": 69.54,
+       "72": 72.72,
+       "96": 74.73,
+       "120": null
+      },
+      "vs_felix": {
+       "time_ratio": 1.059,
+       "gb_ratio": 2.55
+      }
+     }
+    },
+    "swap_availability": {
+     "Check-in": {
+      "arm": "fx_ck",
+      "status": "hit",
+      "time_h": 78.68,
+      "gb": 729.2,
+      "final_acc": 75.31,
+      "peak_acc5": 76.45,
+      "end_h": 120.02,
+      "mean_staleness": 4.93,
+      "paid_not_used_pct": 0.02,
+      "time_h_to_acc": {
+       "50": 2.84,
+       "60": 9.67,
+       "70": 40.18,
+       "75": 78.68,
+       "80": null
+      },
+      "gb_to_acc": {
+       "50": 157.6,
+       "60": 292.3,
+       "70": 551.6,
+       "75": 729.2,
+       "80": null
+      },
+      "acc_at_h": {
+       "6": 57.45,
+       "12": 60.69,
+       "24": 66.53,
+       "48": 71.36,
+       "72": 73.2,
+       "96": 76.14,
+       "120": 75.35
+      },
+      "vs_felix": {
+       "time_ratio": 0.827,
+       "gb_ratio": 0.32
+      }
+     },
+     "Oracle": {
+      "arm": "fx_or",
+      "status": "hit",
+      "time_h": 89.51,
+      "gb": 1957.7,
+      "final_acc": 75.75,
+      "peak_acc5": 76.23,
+      "end_h": 120.0,
+      "mean_staleness": 9.33,
+      "paid_not_used_pct": 0.01,
+      "time_h_to_acc": {
+       "50": 2.5,
+       "60": 12.0,
+       "70": 43.18,
+       "75": 89.51,
+       "80": null
+      },
+      "gb_to_acc": {
+       "50": 186.3,
+       "60": 566.2,
+       "70": 1325.6,
+       "75": 1957.7,
+       "80": null
+      },
+      "acc_at_h": {
+       "6": 57.2,
+       "12": 59.97,
+       "24": 65.22,
+       "48": 71.19,
+       "72": 73.48,
+       "96": 75.78,
+       "120": 75.79
+      },
+      "vs_felix": {
+       "time_ratio": 0.94,
+       "gb_ratio": 0.86
+      }
+     }
+    },
+    "swap_selection": {
+     "Uniform": {
+      "arm": "fx_rnd",
+      "status": "hit",
+      "time_h": 89.84,
+      "gb": 2516.0,
+      "final_acc": 75.64,
+      "peak_acc5": 76.34,
+      "end_h": 120.0,
+      "mean_staleness": 9.79,
+      "paid_not_used_pct": 0.01,
+      "time_h_to_acc": {
+       "50": 2.5,
+       "60": 12.5,
+       "70": 43.17,
+       "75": 89.84,
+       "80": null
+      },
+      "gb_to_acc": {
+       "50": 233.4,
+       "60": 706.4,
+       "70": 1671.9,
+       "75": 2516.0,
+       "80": null
+      },
+      "acc_at_h": {
+       "6": 56.59,
+       "12": 59.63,
+       "24": 65.38,
+       "48": 71.13,
+       "72": 73.1,
+       "96": 75.69,
+       "120": 75.66
+      },
+      "vs_felix": {
+       "time_ratio": 0.944,
+       "gb_ratio": 1.105
+      }
+     },
+     "Oort's selector": {
+      "arm": "fx_oort",
+      "status": "hit",
+      "time_h": 80.34,
+      "gb": 2109.3,
+      "final_acc": 73.9,
+      "peak_acc5": 76.1,
+      "end_h": 120.0,
+      "mean_staleness": 10.03,
+      "paid_not_used_pct": 0.01,
+      "time_h_to_acc": {
+       "50": 2.5,
+       "60": 12.67,
+       "70": 43.67,
+       "75": 80.34,
+       "80": null
+      },
+      "gb_to_acc": {
+       "50": 227.5,
+       "60": 664.1,
+       "70": 1517.8,
+       "75": 2109.3,
+       "80": null
+      },
+      "acc_at_h": {
+       "6": 57.12,
+       "12": 59.7,
+       "24": 65.0,
+       "48": 70.62,
+       "72": 73.57,
+       "96": 75.9,
+       "120": 73.96
+      },
+      "vs_felix": {
+       "time_ratio": 0.844,
+       "gb_ratio": 0.926
+      }
+     }
+    },
+    "swap_aggregation": {
+     "1/\u221a(1+\u03c4)": {
+      "arm": "fx_rold",
+      "status": "hit",
+      "time_h": 101.34,
+      "gb": 2507.0,
+      "final_acc": 74.82,
+      "peak_acc5": 75.15,
+      "end_h": 120.0,
+      "mean_staleness": 10.66,
+      "paid_not_used_pct": 0.01,
+      "time_h_to_acc": {
+       "50": 3.84,
+       "60": 14.5,
+       "70": 51.51,
+       "75": 101.34,
+       "80": null
+      },
+      "gb_to_acc": {
+       "50": 353.4,
+       "60": 832.3,
+       "70": 1803.2,
+       "75": 2507.0,
+       "80": null
+      },
+      "acc_at_h": {
+       "6": 54.97,
+       "12": 57.17,
+       "24": 62.7,
+       "48": 69.53,
+       "72": 72.34,
+       "96": 74.25,
+       "120": 74.77
+      },
+      "vs_felix": {
+       "time_ratio": 1.065,
+       "gb_ratio": 1.101
+      }
+     },
+     "1/(1+\u03c4)": {
+      "arm": "fx_r1",
+      "status": "miss",
+      "time_h": null,
+      "gb": null,
+      "final_acc": 71.73,
+      "peak_acc5": 72.58,
+      "end_h": 120.0,
+      "mean_staleness": 11.53,
+      "paid_not_used_pct": 0.01,
+      "time_h_to_acc": {
+       "50": 6.17,
+       "60": 24.84,
+       "70": 75.84,
+       "75": null,
+       "80": null
+      },
+      "gb_to_acc": {
+       "50": 547.9,
+       "60": 1383.6,
+       "70": 2558.5,
+       "75": null,
+       "80": null
+      },
+      "acc_at_h": {
+       "6": 49.79,
+       "12": 54.04,
+       "24": 59.09,
+       "48": 65.98,
+       "72": 69.16,
+       "96": 71.67,
+       "120": 71.68
+      },
+      "vs_felix": {
+       "time_ratio": null,
+       "gb_ratio": null
+      }
+     }
+    },
+    "swap_concurrency": {
+     "Fixed c = 30": {
+      "arm": "fx_cfix",
+      "status": "hit",
+      "time_h": 76.68,
+      "gb": 1989.3,
+      "final_acc": 76.2,
+      "peak_acc5": 76.99,
+      "end_h": 120.0,
+      "mean_staleness": 9.75,
+      "paid_not_used_pct": 0.01,
+      "time_h_to_acc": {
+       "50": 3.17,
+       "60": 9.5,
+       "70": 37.84,
+       "75": 76.68,
+       "80": null
+      },
+      "gb_to_acc": {
+       "50": 143.5,
+       "60": 354.8,
+       "70": 1177.0,
+       "75": 1989.3,
+       "80": null
+      },
+      "acc_at_h": {
+       "6": 58.0,
+       "12": 60.82,
+       "24": 66.2,
+       "48": 71.67,
+       "72": 74.5,
+       "96": 76.08,
+       "120": 76.24
+      },
+      "vs_felix": {
+       "time_ratio": 0.806,
+       "gb_ratio": 0.874
+      }
+     },
+     "c \u221d eligible": {
+      "arm": "fx_ca",
+      "status": "hit",
+      "time_h": 61.52,
+      "gb": 383.4,
+      "final_acc": 77.36,
+      "peak_acc5": 77.82,
+      "end_h": 120.0,
+      "mean_staleness": 3.16,
+      "paid_not_used_pct": 0.02,
+      "time_h_to_acc": {
+       "50": 7.01,
+       "60": 13.34,
+       "70": 30.52,
+       "75": 61.52,
+       "80": null
+      },
+      "gb_to_acc": {
+       "50": 68.3,
+       "60": 128.8,
+       "70": 239.3,
+       "75": 383.4,
+       "80": null
+      },
+      "acc_at_h": {
+       "6": 47.88,
+       "12": 56.92,
+       "24": 66.72,
+       "48": 73.4,
+       "72": 75.63,
+       "96": 77.29,
+       "120": 77.36
+      },
+      "vs_felix": {
+       "time_ratio": 0.646,
+       "gb_ratio": 0.168
+      }
+     }
+    },
+    "rejected": {
+     "+ UCB": {
+      "arm": "fx_ucb",
+      "status": "hit",
+      "time_h": 89.51,
+      "gb": 2227.5,
+      "final_acc": 75.23,
+      "peak_acc5": 75.91,
+      "end_h": 120.01,
+      "mean_staleness": 10.13,
+      "paid_not_used_pct": 0.01,
+      "time_h_to_acc": {
+       "50": 2.34,
+       "60": 11.5,
+       "70": 42.5,
+       "75": 89.51,
+       "80": null
+      },
+      "gb_to_acc": {
+       "50": 217.0,
+       "60": 614.3,
+       "70": 1495.2,
+       "75": 2227.5,
+       "80": null
+      },
+      "acc_at_h": {
+       "6": 56.92,
+       "12": 60.31,
+       "24": 65.23,
+       "48": 70.92,
+       "72": 73.59,
+       "96": 75.75,
+       "120": 75.28
+      },
+      "vs_felix": {
+       "time_ratio": 0.94,
+       "gb_ratio": 0.978
+      }
+     },
+     "2 epochs": {
+      "arm": "fx_e2",
+      "status": "miss",
+      "time_h": null,
+      "gb": null,
+      "final_acc": 74.25,
+      "peak_acc5": 74.31,
+      "end_h": 120.0,
+      "mean_staleness": 10.47,
+      "paid_not_used_pct": 0.05,
+      "time_h_to_acc": {
+       "50": 3.0,
+       "60": 16.01,
+       "70": 61.34,
+       "75": null,
+       "80": null
+      },
+      "gb_to_acc": {
+       "50": 182.3,
+       "60": 580.3,
+       "70": 1284.7,
+       "75": null,
+       "80": null
+      },
+      "acc_at_h": {
+       "6": 55.45,
+       "12": 56.54,
+       "24": 61.87,
+       "48": 68.41,
+       "72": 70.93,
+       "96": 74.18,
+       "120": 74.18
+      },
+      "vs_felix": {
+       "time_ratio": null,
+       "gb_ratio": null
+      }
+     }
+    }
+   }
+  }
+ }
+}

@@ -135,6 +135,15 @@ class TestSimReorderBuffer:
         assert buf.pending_after(99.0) == set()
         assert SimReorderBuffer().pending_after(0.0) == set()
 
+    def test_next_after_is_earliest_future_completion(self):
+        buf = SimReorderBuffer()
+        buf.add("done", 5.0)
+        buf.add("slow1", 12.0)
+        buf.add("slow2", 30.0)
+        assert buf.next_after(10.0) == 12.0
+        assert buf.next_after(12.0) == 30.0
+        assert buf.next_after(99.0) is None
+
 
 class TestStalenessReconstruction:
     """A scripted scenario: committing buffered updates in completion order and

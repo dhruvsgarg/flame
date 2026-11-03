@@ -36,10 +36,11 @@ _SECTIONS = [
     ]),
     ("1", "Clock / Time-base", [
         ("K1   vclock monotone (sim)",          "sim_commit_monotone"),
-        ("K7   sim_rate in [0.01, 100]",        "sim_rate"),
+        ("K7   sim_rate >= 0.01",               "sim_rate"),
         ("P3   trainer_speed_s (control)",      "trainer_speed"),
         ("K3a  modeled-compute advance",        "modeled_compute_advance"),
         ("K3b  overhead residual",              "overhead_residual"),
+        ("K3s  timeout stalls",                 "timeout_stalls"),
         ("K4   overlap factor (diagnostic)",    "overlap_factor"),
         ("K3   per-round advance distribution", "per_round_advance"),
         ("K2   rounds-per-virtual-second",      "throughput"),
@@ -84,6 +85,7 @@ _SECTIONS = [
         ("T_  per-phase combined (diagnostic)", "trainer_phase"),
         ("T3  GPU budget respected (real)",     "gpu_budget_real"),
         ("T3  GPU budget respected (sim)",      "gpu_budget_sim"),
+        ("Ovr overruns of D (PL19)",            "timing_overrun"),
         ("K6  sim_send_ts correctness",         "sim_send_ts"),
     ]),
     ("5", "Update Return & Ordering", [
@@ -238,6 +240,11 @@ def _fmt_metric(name: str, res: dict) -> list:
                 f"         mean_overrun_frac={mof}  "
                 f"trainers_with_overrun={res.get('trainers_with_any_overrun')}",
             ]
+    elif name == "timing_overrun" and "real_overran" in res:
+        lines += [
+            f"         real {res['real_overran']}/{res['real_rounds']}  sim {res['sim_overran']}/{res['sim_rounds']}"
+            f"  (max {res.get('max_frac')})",
+        ]
     elif name == "sim_send_ts":
         issues = res.get("issues", [])
         if issues:
@@ -315,6 +322,7 @@ def _fmt_metric(name: str, res: dict) -> list:
     elif name == "selection_detail":
         lines += [
             f"         num_chosen : real={res.get('real_mean_chosen')}  sim={res.get('sim_mean_chosen')}  "
+            f"total {res.get('real_total_chosen')}/{res.get('sim_total_chosen')}  "
             f"rel_diff={res.get('rel_diff_chosen')} (<={res.get('tol_chosen')})",
             f"         in_flight  : real={res.get('real_mean_inflight')}  sim={res.get('sim_mean_inflight')}  "
             f"rel_diff={res.get('rel_diff_inflight')} (<={res.get('tol_inflight')})",
@@ -369,6 +377,13 @@ def _fmt_metric(name: str, res: dict) -> list:
             f"         implied per-commit overhead="
             f"{res.get('implied_per_commit_overhead_s')}s "
             f"(agg_goal={res.get('agg_goal')})",
+            f"         selection-mix-adjusted residual={res.get('mix_adjusted_residual_s')}s (diag)",
+        ]
+    elif name == "timeout_stalls":
+        lines += [
+            f"         stalls real={res.get('real_stalls')}/{res.get('real_rounds')} "
+            f"sim={res.get('sim_stalls')}/{res.get('sim_rounds')} rounds  "
+            f"rate diff tol={res.get('tol')}",
         ]
     elif name == "eligible_speed":
         lines += [

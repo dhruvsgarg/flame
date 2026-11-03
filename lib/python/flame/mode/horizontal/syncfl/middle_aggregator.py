@@ -128,6 +128,7 @@ class MiddleAggregator(Role, metaclass=ABCMeta):
         end = channel.one_end()
         msg, _ = channel.recv(end)
 
+        materialize_weights(msg)  # FX-N77: WEIGHTS_BYTES from pack_weights
         if MessageType.WEIGHTS in msg:
             self.weights = msg[MessageType.WEIGHTS]
 

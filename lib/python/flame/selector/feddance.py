@@ -4,12 +4,16 @@
 
 U_m(r) = (V_m * I_m * A_m) * (1 + log10(R+1) / (10 * (1 + J_m)))
   V_m: Poisson availability over next K rounds
-  I_m: average training loss in last engaged round (Oort stat_utility)
+  I_m: mean mini-batch training loss over the last engaged round's tau local iterations (Eq. 6)
   A_m: slope of training accuracy across last beta engagements
   J_m: last round in which device m was engaged
 
 The selector picks top-N by U_m, with cold-start substitution from the
-previous round's mean I, A for devices that have never returned an update.
+previous round's mean I, A for devices never selected (Alg. 1 l.11-15).
+feedback="aggregated" (FX-D150): only aggregated updates report I/A (FedScale stragglers never run);
+a dropped return repeats its last accuracy (zero increment). "all" reverts.
+straggler_score="zero" = Alg. 1 l.3 literal (L_m = 0, never revived); "mean" (FX-N90, off) scores a selected device
+with no aggregated update at last round's mean I, as FedScale scores stragglers (REFL aggregator.py:611-616).
 """
 
 import logging
@@ -19,6 +23,7 @@ from collections import deque
 from typing import Optional
 
 from flame.availability.feddance_predictor import FedDancePredictor
+from flame.channel import KEY_CH_STATE, VAL_CH_STATE_RECV
 from flame.common.typing import Scalar
 from flame.end import End
 from flame.selector import AbstractSelector, SelectorReturnType
@@ -28,7 +33,6 @@ from flame.selector.properties import (
     PROP_LAST_ENGAGED_ROUND,
     PROP_LOCAL_ACCURACY,
     PROP_SELECTED_COUNT,
-    PROP_STAT_UTILITY,
     PROP_U,
     PROP_V,
 )
@@ -49,6 +53,9 @@ class FedDanceSelector(AbstractSelector):
 
         self.history_window = kwargs.get("history_window", 50)
         self.prediction_window = kwargs.get("prediction_window", 5)
+        self.checkin_source = kwargs.get("checkin_source", "selection")
+        if self.checkin_source not in ("selection", "returns"):
+            raise ValueError(f"checkin_source={self.checkin_source!r}: expected selection or returns")
         self.accuracy_window = kwargs.get("accuracy_window", 5)
         self.overcommitment = kwargs.get("overcommitment", 1.0)
         self.negative_accuracy_handling = kwargs.get(
@@ -60,6 +67,18 @@ class FedDanceSelector(AbstractSelector):
             )
 
         self.num_of_ends = max(1, int(self.aggr_num * self.overcommitment))
+        # "random": uniform pick from the same eligible set (the paper's FedAvg baseline; only selection differs).
+        self.utility = kwargs.get("utility", "feddance")
+        if self.utility not in ("feddance", "random"):
+            raise ValueError(f"utility must be feddance/random, got {self.utility}")
+        self.feedback = kwargs.get("feedback", "aggregated")
+        if self.feedback not in ("aggregated", "all"):
+            raise ValueError(f"feedback must be aggregated/all, got {self.feedback}")
+        self.straggler_score = kwargs.get("straggler_score", "zero")
+        if self.straggler_score not in ("mean", "zero"):
+            raise ValueError(f"straggler_score must be mean/zero, got {self.straggler_score}")
+        self.ever_selected: set = set()
+        self._round_participants: list = []
 
         self.predictor = FedDancePredictor(
             history_window=self.history_window,
@@ -95,25 +114,34 @@ class FedDanceSelector(AbstractSelector):
         task_to_perform: str = "train",
         **kwargs,
     ) -> SelectorReturnType:
-        num_of_ends = min(len(ends), self.num_of_ends)
+        num_of_ends = min(len(ends), kwargs.get("num_to_select") or self.num_of_ends)  # FX-N37 top-up
         if num_of_ends == 0:
             return {}
 
         round_num = channel_props.get("round", 0)
 
-        if round_num <= self.round and len(self.newly_selected_this_round) != 0:
+        agg_version_key = kwargs.get("agg_version_key")
+        trainer_version_keys = kwargs.get("trainer_version_keys")
+        # A dispatch (version keys passed) never re-sends the cache (see OortSelector.select).
+        if (trainer_version_keys is None and round_num <= self.round
+                and len(self.newly_selected_this_round) != 0):
             return {key: None for key in self.newly_selected_this_round}
+        if channel_props.get(KEY_CH_STATE) == VAL_CH_STATE_RECV:
+            return {}  # no SEND this round (starvation return): nothing to receive (FX-D6)
 
         unavail = set(trainer_unavail_list or [])
 
-        for end_id in ends:
-            if end_id not in unavail:
-                self.predictor.record_checkin(end_id, round_num)
+        if self.checkin_source == "selection":  # legacy: the trace's online set; R27 forbids it for unaware FedDance
+            for end_id in ends:
+                if end_id not in unavail:
+                    self.predictor.record_checkin(end_id, round_num)
 
         eligible = {
             eid: e
             for eid, e in ends.items()
             if eid not in unavail and eid not in self.selected_ends
+            and not (trainer_version_keys is not None and agg_version_key is not None
+                     and trainer_version_keys.get(eid) == agg_version_key)  # FX-D9
         }
 
         if not eligible:
@@ -129,11 +157,15 @@ class FedDanceSelector(AbstractSelector):
                 f"[FEDDANCE] round {round_num}: only {num_to_select}/{num_of_ends} trainers eligible"
             )
 
-        utilities = self._compute_utilities(eligible, round_num)
-        selected = self._pick_top_n(utilities, num_to_select)
+        if self.utility == "random":
+            selected = self._pyrng.sample(sorted(eligible), num_to_select)
+        else:
+            utilities = self._compute_utilities(eligible, round_num)
+            selected = self._pick_top_n(utilities, num_to_select)
 
         self.newly_selected_this_round = set(selected)
         self.selected_ends = self.selected_ends | self.newly_selected_this_round
+        self.ever_selected |= self.newly_selected_this_round
 
         for end_id in selected:
             end = ends[end_id]
@@ -178,15 +210,9 @@ class FedDanceSelector(AbstractSelector):
         for end_id, end in sorted(eligible.items()):
             v = self.predictor.V_m(end_id, round_num)
 
-            i = self.last_loss.get(end_id)
-            if i is None:
-                stat_util = end.get_property(PROP_STAT_UTILITY)
-                i = stat_util if stat_util is not None else mean_I
+            i = self._i_factor(end_id, mean_I)
 
-            a = self._accuracy_slope(end_id)
-            if a is None:
-                a = mean_A
-            a = self._handle_negative_a(a)
+            a = self._a_factor(end_id, mean_A)
 
             base = v * i * a
             ucb = 1.0 + (
@@ -202,6 +228,17 @@ class FedDanceSelector(AbstractSelector):
             utilities.append((end_id, u))
 
         return utilities
+
+    def _i_factor(self, end_id: str, mean_I: float) -> float:
+        i = self.last_loss.get(end_id)
+        if i is not None:
+            return i
+        zero = self.feedback == "aggregated" and self.straggler_score == "zero" and end_id in self.ever_selected
+        return 0.0 if zero else mean_I  # Alg. 1 l.3, l.14-15; FX-N90
+
+    def _a_factor(self, end_id: str, mean_A: float) -> float:
+        a = self._accuracy_slope(end_id)
+        return self._handle_negative_a(mean_A if a is None else a)
 
     def _accuracy_slope(self, end_id: str) -> Optional[float]:
         hist = self.accuracy_history.get(end_id)
@@ -225,13 +262,22 @@ class FedDanceSelector(AbstractSelector):
         return [eid for eid, _ in utilities[:n]]
 
     def on_update_received(
-        self, end_id: str, msg: dict, round_num: int
+        self, end_id: str, msg: dict, round_num: int, accepted: bool = True
     ) -> None:
         from flame.mode.message import MessageType
 
         self.ordered_updates_recv_ends.append(end_id)
+        if self.checkin_source == "returns":  # F42b (R27): a client is seen only when its update arrives
+            self.predictor.record_checkin(end_id, round_num)
+        if self.feedback == "aggregated":
+            self._round_participants.append(end_id)
+            if not accepted:  # FX-D150: no new loss/acc; a_m unchanged, so Eq. 7 sees a zero increment
+                hist = self.accuracy_history.setdefault(end_id, deque(maxlen=self.accuracy_window))
+                hist.append(hist[-1] if hist else 0.0)
+                self.last_engaged_round[end_id] = round_num
+                return
 
-        loss = msg.get(MessageType.STAT_UTILITY)
+        loss = msg.get(MessageType.TRAIN_LOSS_MEAN)  # Eq. 6: mean loss over the tau local iterations
         acc = msg.get(MessageType.LOCAL_ACCURACY)
 
         if loss is not None:
@@ -260,7 +306,16 @@ class FedDanceSelector(AbstractSelector):
     def on_round_completed(
         self, ends: dict[str, End], round_num: int
     ) -> None:
-        if self._round_loss_buffer:
+        if self.feedback == "aggregated":  # Alg. 1 l.11-12: means of the factors over S_prev
+            if self._round_participants:
+                mean_I = self.prev_round_mean_I if self.prev_round_mean_I is not None else 1.0
+                mean_A = self.prev_round_mean_A if self.prev_round_mean_A is not None else 1.0
+                ps = self._round_participants
+                self.prev_round_mean_I = sum(self._i_factor(e, mean_I) for e in ps) / len(ps)
+                self.prev_round_mean_A = sum(self._a_factor(e, mean_A) for e in ps) / len(ps)
+            self._round_participants = []
+            self._round_loss_buffer, self._round_acc_buffer = [], []
+        elif self._round_loss_buffer:
             self.prev_round_mean_I = sum(self._round_loss_buffer) / len(
                 self._round_loss_buffer
             )
@@ -274,3 +329,10 @@ class FedDanceSelector(AbstractSelector):
         for end_id in self.ordered_updates_recv_ends:
             self.selected_ends.discard(end_id)
         self.ordered_updates_recv_ends = []
+
+    # Channel leave / UN_AVL hooks.
+    def _cleanup_removed_ends(self, end_id) -> None:
+        self.selected_ends.discard(end_id)
+
+    def remove_from_selected_ends(self, ends: dict[str, End], end_id: str) -> None:
+        self.selected_ends.discard(end_id)

@@ -10,6 +10,7 @@ check_and_update_state_avl (trainer/pytorch/main.py:336).
 
 import logging
 import math
+import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Optional
@@ -36,44 +37,100 @@ _AVL_STATE_VALUES = frozenset(
     {TrainerAvailState.AVL_TRAIN.value, TrainerAvailState.AVL_EVAL.value}
 )
 
+# FX-N97: a result is deliverable in these states. AVL_EVAL is eval-only: a train result waits for AVL_TRAIN.
+DELIVERABLE_STATES = {
+    "train": frozenset({TrainerAvailState.AVL_TRAIN.value}),
+    "eval": _AVL_STATE_VALUES,
+}
+
+
+def deliverable(state, task: str = "train") -> bool:
+    """Whether a `task` result can be delivered while the trainer is in `state` (enum or str)."""
+    return getattr(state, "value", state) in DELIVERABLE_STATES[task]
+
 
 # ---------------------------------------------------------------------------
 # Internal YAML cache — loaded once per (trace_dir) call site, never reloaded.
 # ---------------------------------------------------------------------------
 
 @lru_cache(maxsize=16)
+def read_trace_file(path: str) -> dict:
+    """A whole trace YAML, parsed once per process with the C loader (149 h synthetic file: 9 s vs 31 s).
+    encoding="utf-8" explicit: a non-UTF-8 locale mis-decodes non-ASCII bytes (see debug_run.sh)."""
+    with open(path, encoding="utf-8") as f:
+        return yaml.load(f, Loader=getattr(yaml, "CSafeLoader", yaml.SafeLoader))
+
+
 def _raw_mobiperf(trace_dir: str) -> dict:
-    # encoding="utf-8" explicit: open() otherwise falls back to the node's
-    # locale-preferred encoding, which mis-decodes any non-ASCII byte on a
-    # non-UTF-8 locale (e.g. C/POSIX) and yaml.safe_load then rejects the
-    # resulting control chars — bit us once already on the sibling parity
-    # YAML (see debug_run.sh).
-    with open(Path(trace_dir) / "mobiperf_traces.yaml", encoding="utf-8") as f:
-        return yaml.safe_load(f)["traces"]
+    return read_trace_file(str(Path(trace_dir) / "mobiperf_traces.yaml"))["traces"]
 
 
-@lru_cache(maxsize=16)
 def _raw_synthetic(trace_dir: str) -> dict:
-    with open(Path(trace_dir) / "synthetic_traces.yaml", encoding="utf-8") as f:
-        return yaml.safe_load(f)["traces"]
+    return read_trace_file(str(Path(trace_dir) / "synthetic_traces.yaml"))["traces"]
 
 
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
+_TRACE_SCALE_ENV = "FLAME_TRACE_TIME_SCALE"
+_TRACE_OFFSET_ENV = "FLAME_TRACE_OFFSET_S"
+_scale_logged = False
+
+
+def trace_time_scale() -> float:
+    """Divisor on every trace timestamp (harness only: compresses availability time by the
+    same factor as trainingDelayFactor). Unset/1 = production timeline."""
+    global _scale_logged
+    raw = os.environ.get(_TRACE_SCALE_ENV, "").strip()
+    scale = float(raw) if raw else 1.0
+    if scale <= 0:
+        raise ValueError(f"{_TRACE_SCALE_ENV}={raw!r} must be > 0")
+    if scale != 1.0 and not _scale_logged:
+        logger.warning(f"[TRACE_SCALE] availability trace timestamps divided by {scale} ({_TRACE_SCALE_ENV})")
+        _scale_logged = True
+    return scale
+
+
+def trace_offset_s() -> float:
+    """FX-N123: trace seconds skipped before the run's t = 0 (a leg starts this far into every trace). Unset/0 = trace start."""
+    raw = os.environ.get(_TRACE_OFFSET_ENV, "").strip()
+    off = float(raw) if raw else 0.0
+    if off < 0:
+        raise ValueError(f"{_TRACE_OFFSET_ENV}={raw!r} must be >= 0")
+    return off
+
+
+def offset_events(events, off: float):
+    """[[ts, state], ...] seen from trace time `off`: the state in force at `off` at 0, later events at ts - off."""
+    if not off:
+        return events
+    before = [e for e in events if float(e[0]) <= off]
+    head = [[0.0, before[-1][1]]] if before else []
+    return head + [[float(ts) - off, st] for ts, st in events if float(ts) > off]
+
+
+def scale_events(events):
+    """[[ts, state], ...] at the run's clock: shifted by trace_offset_s(), then divided by trace_time_scale()."""
+    scale, off = trace_time_scale(), trace_offset_s()
+    if scale == 1.0 and not off:
+        return events
+    return [[float(ts) / scale, state] for ts, state in offset_events(events, off)]
+
+
 def _canonical_trace_name(trace_name: str) -> str:
     """Normalize a configured trace name to a canonical store key.
 
     Legacy configs (trackTrainerAvail.trace) name traces with an ``avl_events_``
     prefix, e.g. ``avl_events_syn_20`` / ``avl_events_mobiperf_2st``; newer ones
-    use the bare canonical name (``syn_20``). Strip the prefix so both resolve to
+    use the bare canonical name (``syn_20_3st``). Strip the prefix so both resolve to
     the same SortedDict — without this the legacy oort/refl JSON configs load 0
     traces and the gate silently turns OFF.
     """
     if trace_name and trace_name.startswith("avl_events_"):
-        return trace_name[len("avl_events_"):]
-    return trace_name
+        trace_name = trace_name[len("avl_events_"):]
+    # Bare 3-state name (what the trainer's client_notify uses) = the 50% battery variant.
+    return "mobiperf_3st_50" if trace_name == "mobiperf_3st" else trace_name
 
 
 def load_trace(
@@ -84,7 +141,7 @@ def load_trace(
 ) -> SortedDict:
     """Return per-trainer availability as SortedDict[ts_s → state_str].
 
-    trace_name: canonical name — syn_0 / syn_20 / syn_50 / mobiperf_2st /
+    trace_name: canonical name — syn_0 / syn_20_3st / syn_50_3st / mobiperf_2st /
         mobiperf_3st_50 / mobiperf_3st_75.
     trainer_key: registry key ('trainer_001'). For mobiperf the numeric suffix
         is used to derive the device key ('device_001').
@@ -93,6 +150,14 @@ def load_trace(
 
     syn_0 / all-available traces return an empty SortedDict (always AVL_TRAIN).
     """
+    result = SortedDict()
+    for ts, state in scale_events(raw_events(trace_name, trainer_key, base_dir=base_dir)):
+        result[float(ts)] = state
+    return result
+
+
+def raw_events(trace_name: str, trainer_key: str, *, base_dir: Optional[str] = None) -> list:
+    """[[ts, state], ...] of one trainer on the trace's own clock: no offset, no scale (a device's full history)."""
     trace_dir = str(Path(base_dir) if base_dir else _DEFAULT_TRACE_DIR)
     trace_name = _canonical_trace_name(trace_name)
 
@@ -105,18 +170,16 @@ def load_trace(
     elif trace_name.startswith("syn_"):
         raw = _raw_synthetic(trace_dir)
         if trace_name not in raw:
-            raise KeyError(f"trace {trace_name!r} not found in synthetic_traces.yaml")
+            hint = f"; 2-state syn traces are deprecated, use {trace_name}_3st (FX-D166)" \
+                if trace_name in ("syn_10", "syn_20", "syn_50") else ""
+            raise KeyError(f"trace {trace_name!r} not found in synthetic_traces.yaml{hint}")
         entry = raw[trace_name]
         per_trainer = entry.get("per_trainer", {}).get("n300", {})
         pattern = entry.get("pattern", [])
         events = per_trainer.get(trainer_key) or pattern
     else:
         raise KeyError(f"unsupported trace name: {trace_name!r}")
-
-    result = SortedDict()
-    for ts, state in events:
-        result[float(ts)] = state
-    return result
+    return events
 
 
 def state_at(trace: SortedDict, t: float) -> TrainerAvailState:
@@ -137,15 +200,16 @@ def state_at(trace: SortedDict, t: float) -> TrainerAvailState:
         return TrainerAvailState.AVL_TRAIN
 
 
-def next_avail_after(trace: SortedDict, t: float) -> float:
-    """Smallest ts > t whose state ∈ {AVL_TRAIN, AVL_EVAL}.
+def next_avail_after(trace: SortedDict, t: float, task: Optional[str] = None) -> float:
+    """Smallest ts > t whose state is AVL_*, or deliverable for `task` (FX-N97) when given.
 
     Returns math.inf if the trace never recovers (caller must guard — Challenge 10).
     """
+    states = _AVL_STATE_VALUES if task is None else DELIVERABLE_STATES[task]
     idx = trace.bisect_right(t)
     for i in range(idx, len(trace)):
         ts, state = trace.peekitem(i)
-        if state in _AVL_STATE_VALUES:
+        if state in states:
             return float(ts)
     return math.inf
 
@@ -194,3 +258,23 @@ def read_trainer_unavailability(
         f"[AVAIL] loaded {len(trainer_events_dict)} trainer traces (trace={trace!r})"
     )
     return trainer_events_dict or None
+
+
+def effective_unavailability(trace_name: str, run_s: float, scale: float = 1.0, n_trainers: int = 300) -> float:
+    """Mean non-trainable (not AVL_TRAIN) time fraction over trainers 1..n for a run of `run_s` at trace time scale
+    `scale` (covers run_s * scale of trace time): the level a trace's name states. A short run sees less than a
+    ramped trace's name (FX-N35)."""
+    horizon = run_s * scale
+    env_scale = trace_time_scale()  # load_trace applies it; undo to read trace time
+    fracs = []
+    for i in range(1, n_trainers + 1):
+        tr = load_trace(trace_name, f"trainer_{i:03d}")
+        ts = [float(t) * env_scale for t in tr.keys()]
+        down = 0.0
+        for j, (t0, state) in enumerate(zip(ts, tr.values())):
+            if t0 >= horizon:
+                break
+            if state != TrainerAvailState.AVL_TRAIN.value:
+                down += min(ts[j + 1] if j + 1 < len(ts) else horizon, horizon) - t0
+        fracs.append(down / horizon)
+    return sum(fracs) / len(fracs)

@@ -23,6 +23,7 @@ from flame.channel_manager import ChannelManager
 from flame.common.constants import DeviceType
 from flame.common.custom_abcmeta import ABCMeta, abstract_attribute
 from flame.common.util import (
+    materialize_weights,
     MLFramework,
     delta_weights_pytorch,
     delta_weights_tensorflow,
@@ -142,6 +143,7 @@ class SlowTrainer(Role, metaclass=ABCMeta):
             time.sleep(1)
             return
 
+        materialize_weights(msg)  # FX-N77: WEIGHTS_BYTES from pack_weights
         if MessageType.WEIGHTS in msg:
             self.weights = weights_to_model_device(msg[MessageType.WEIGHTS], self.model)
             self._update_model()

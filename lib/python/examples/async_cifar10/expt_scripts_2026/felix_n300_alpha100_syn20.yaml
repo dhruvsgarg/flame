@@ -9,7 +9,7 @@
 
 experiments:
   - name: felix_n300_alpha100_syn20
-    description: "Felix baseline, n=300, alpha=100, syn_20 trace"
+    description: "Felix baseline, n=300, alpha=100, syn_20_3st trace"
 
     baseline: felix
 
@@ -20,7 +20,7 @@ experiments:
         name: cifar10
         dirichlet_alpha: 100.0
       availability:
-        mode: syn_20
+        mode: syn_20_3st
       enable_training_delays: true
       hyperparameters:
         batchSize: 32
@@ -28,7 +28,7 @@ experiments:
       config_overrides:
         hyperparameters:
           client_notify:
-            trace: syn_20
+            trace: syn_20_3st
 
     aggregator:
       config_template: ../_metadata/aggregator_base.json

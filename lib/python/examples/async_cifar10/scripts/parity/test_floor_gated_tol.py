@@ -475,6 +475,19 @@ class TestTotalCommitsIsTerminalStatesTimeHalf:
         assert res["throughput"]["replicate_floor_rel"] == {"throughput_rel": 0.043}
         assert res["total_commits"]["tol"] == k8["time_tol"], "U2 shares K8's gate"
 
+    def test_a_residual_past_k_floors_stays_red_when_the_floor_swallowed_the_tolerance(self):
+        """FX-D188 (PR38 cifar lin oort): a 17% floor > 8% nominal SKIPped K2 at a 57% residual."""
+        from parity.test_ladder import AGG_GOAL, _build_mode
+
+        from parity.checks import run_all_parity
+        real_agg, real_tr = _build_mode(20, advance=10.0, with_vclock=False)
+        sim_agg, sim_tr = _build_mode(20, advance=25.0, with_vclock=True)
+        far = run_all_parity(real_agg, sim_agg, real_tr, sim_tr, agg_goal=AGG_GOAL, floors={"throughput_rel": 0.17})
+        assert far["throughput"]["ok"] is False and far["throughput"].get("status") != "SKIP"
+        assert "throughput_rel" in far["throughput"]["beyond_floor"]
+        near = run_all_parity(real_agg, sim_agg, real_tr, sim_tr, agg_goal=AGG_GOAL, floors={"throughput_rel": 0.25})
+        assert near["throughput"]["status"] == "SKIP"
+
 
 class TestTheSharedCadenceCountVotesOnce:
     """`v1_iter_per_data_id`, `cohort_sequence.count` and
@@ -709,3 +722,153 @@ class TestThresholdProvenance:
                      "overlap_factor"):
             assert left not in debt, f"{left} is floor-gated now"
         assert len(debt) <= 41
+
+
+def test_timeout_stalls_split_from_the_clock_rungs():
+    """FX-N62: K3b grades stall-free rounds; the 90s-stall count is graded on its own (K3s)."""
+    from parity.checks import overhead_residual, timeout_stalls
+
+    def _leg(n, stall_at):
+        t, ev = 0.0, []
+        for r in range(1, n + 1):
+            t += 93.0 if r in stall_at else 3.0
+            ev.append({"event": "agg_round", "round": r, "ts": t, "contributing_trainers": ["1"]})
+        return {"agg_rounds": ev}
+    a, b = _leg(150, {20, 50, 80, 110, 140}), _leg(150, {60})
+    assert overhead_residual(a, b, same_mode=True)["ok"]
+    ts = timeout_stalls(a, b, same_mode=True)
+    assert (ts["real_stalls"], ts["sim_stalls"]) == (5, 1) and ts["ok"]
+    assert not timeout_stalls(_leg(150, set(range(5, 150, 5))), b, same_mode=True)["ok"]
+
+
+def test_stall_counts_match_across_the_cut(monkeypatch):
+    """FX-D157: twins 66/70 s vs 74/78 s straddle the 72 s cut; stall-free rungs promote 66/70, K3s keeps 1 vs 3."""
+    from parity import checks
+    from parity.checks import overhead_residual, overlap_factor, timeout_stalls
+
+    def _leg(gaps_at):
+        t, ev = 0.0, []
+        for r in range(1, 31):
+            t += gaps_at.get(r, 18.0)
+            ev.append({"event": "agg_round", "round": r, "ts": t, "contributing_trainers": ["1"],
+                       "intrinsic_span_s": 10.0, "is_async": True})
+        return {"agg_rounds": ev}
+    a, b = _leg({5: 98.0, 12: 70.0, 20: 66.0}), _leg({5: 98.0, 12: 74.0, 20: 78.0})
+    ts = timeout_stalls(a, b, same_mode=True)
+    assert (ts["real_stalls"], ts["sim_stalls"]) == (1, 3)
+    assert overhead_residual(a, b, same_mode=True)["ok"] and overlap_factor(a, b, same_mode=True)["ok"]
+    monkeypatch.setattr(checks, "PAIR_MATCH_STALLS", False)
+    assert not overhead_residual(a, b, same_mode=True)["ok"]
+
+
+def test_k8_keeps_same_clock_commits_and_shares_the_slow_band(monkeypatch):
+    """FX-D159 (PR33 cifar fedbuff syn_50_3st): sim's same-vclock commits were dropped from K8's advances, lifting its slow
+    band past a twin 12 s round, so only real's 12+14+54 s split stall left the clock (13% vs raw 0.6%)."""
+    from parity import checks
+    from parity.checks import _pair_stall_sets, terminal_state_parity
+
+    gaps = [1.0, 2.0, 12.0, 14.0, 54.0] + ([0.0] * 6 + [3.0, 9.0, 4.0, 10.0, 5.0]) * 6
+
+    def _leg(zero):
+        t, ev = 0.0, []
+        for r, g in enumerate(gaps, 1):
+            t += g or zero
+            ev.append({"event": "agg_round", "round": r, "ts": t, "contributing_trainers": [str(r % 7)]})
+        return {"agg_rounds": ev}
+    k8 = terminal_state_parity(_leg(0.01), _leg(0.0), same_mode=True)
+    assert k8["time_rel_diff"] < 0.02 and k8["ok"]
+    r, s = [12.0, 14.0, 54.0] + [3.0] * 15, [12.1, 14.0, 54.0] + [4.1] * 9  # bands 9.0 vs 12.3 s; pooled 10.65 s
+    assert _pair_stall_sets(r, s, 72.0) == ({0, 1, 2}, {0, 1, 2})
+    monkeypatch.setattr(checks, "PAIR_SLOW_BAND", False)
+    monkeypatch.setattr(checks, "PAIR_MATCH_STALLS", False)
+    assert _pair_stall_sets(r, s, 72.0) == ({0, 1, 2}, set())
+
+
+def test_split_stall_is_one_episode_and_stays_out_of_k3b_and_k4():
+    """FX-N62: a 90s stall served late (10.7+12.8+70.8s) is one stall; K3b and K4 grade without it."""
+    from parity.checks import _stall_episodes, overhead_residual, overlap_factor
+
+    def _leg(n, gaps_at):
+        t, ev = 0.0, []
+        for r in range(1, n + 1):
+            t += gaps_at.get(r, 2.0)
+            ev.append({"event": "agg_round", "round": r, "ts": t, "contributing_trainers": ["1"],
+                       "intrinsic_span_s": 2.0})
+        return {"agg_rounds": ev}
+    split = {100: 10.7, 101: 12.8, 102: 70.8}
+    assert _stall_episodes([2.0] * 5 + [10.7, 12.8, 70.8] + [2.0] * 5) == [[5, 6, 7]]
+    assert _stall_episodes([2.0] * 5 + [70.8] + [2.0] * 5) == []
+    a, b = _leg(300, {100: 93.0}), _leg(300, split)
+    assert overhead_residual(a, b, same_mode=True)["ok"]
+    assert overlap_factor(a, b, same_mode=True)["ok"]
+
+
+def test_k3b_reports_the_selection_mix_adjusted_residual():
+    """FX-N67: a barrier leg whose slowest pick is 4s slower reads 4s apart, but 0 net of the speed mix."""
+    from parity.checks import overhead_residual
+
+    def _leg(step, spd):
+        return {"agg_rounds": [{"event": "agg_round", "round": r, "ts": r * step, "contributing_trainers": ["1"],
+                                "trainer_speed_s": [spd]} for r in range(1, 40)]}
+    res = overhead_residual(_leg(28.0, 27.8), _leg(24.0, 23.8), same_mode=True)
+    assert not res["ok"] and res["residual_s"] == 4.0 and res["mix_adjusted_residual_s"] == 0.0
+
+
+def test_support_guard_survives_the_p99_edge_but_catches_a_real_tail():
+    """FX-N67: a slow bucket at ~1% of picks flips a bare p99 ratio; a tail an order of magnitude wider still fails."""
+    from parity.checks import training_budget_parity
+
+    def _tr(vals):
+        return {"t": {"trainer_round": [{"training_budget_s": v} for v in vals]}}
+    real = _tr([2.0] * 1250 + [11.75] * 10)
+    assert training_budget_parity(real, _tr([2.0] * 1245 + [11.75] * 15))["ok"]
+    assert not training_budget_parity(real, _tr([2.0] * 1100 + [50.0] * 160))["ok"]
+
+
+class TestControlFloors:
+    def test_reads_each_rungs_gap_and_skips_absent_rungs(self):
+        from parity.checks import control_floors
+        res = {"throughput": {"matched_window_rel_diff": 0.17},
+               "terminal_state": {"time_rel_diff": 0.169, "trainers_rel_diff": 0.0},
+               "per_round_advance": {"status": "SKIP"}}
+        assert control_floors(res) == {"throughput_rel": 0.17, "time_to_n": 0.169, "trainers_at_n": 0.0}
+
+    def test_no_tighten_keeps_nominal_but_a_swallowing_floor_still_skips(self):
+        from parity.checks import run_all_parity  # noqa: F401  (signature carries floors_tighten)
+        import inspect
+        assert inspect.signature(run_all_parity).parameters["floors_tighten"].default is True
+
+
+def test_selection_bias_floor_skips_a_lock_in_draw():
+    """FX-N68: A2c's bias gate takes a replicate floor; one past the tolerance SKIPs it."""
+    from parity.checks import floor_gated_tol
+    _, why = floor_gated_tol(0.10, 0.1525, min_abs=0.02)
+    assert why
+
+
+def test_speed_identity_grades_per_commit_not_per_snapshot():
+    """FX-D40: a value held across many selection snapshots must not outweigh other commits."""
+    from parity.checks import trainer_speed_identity_parity
+    commits = [{"agg_observed_s": {"t1": v}} for v in (3.0, 3.0, 9.0, 3.0)]
+    held = lambda v, n: [{"per_trainer": {"t1": {"speed_s": v}}}] * n
+    real = {"agg_rounds": commits, "selection_train": held(3.0, 3) + held(9.0, 300)}
+    sim = {"agg_rounds": commits, "selection_train": held(3.0, 300) + held(9.0, 3)}
+    assert trainer_speed_identity_parity(real, sim)["speed_s"]["ok"]
+
+
+def test_stall_cut_scales_with_run_timeout():
+    """FX-D46: a 200s round is a stall at the 90s timeout, not at speech's 450s."""
+    from parity.checks import _stall_cut, _stall_episodes
+    adv = [5.0] * 20 + [200.0] + [5.0] * 20
+    assert _stall_episodes(adv, _stall_cut({}, {})) == [[20]]
+    assert _stall_episodes(adv, _stall_cut({"task_timeout_s": 450.0}, {"task_timeout_s": 450.0})) == []
+
+
+def test_simultaneous_sim_commits_count_as_zero_advance():
+    """FX-D91 (run 27 speech fedbuff): 36 vs 36 rounds read 60 vs 50 s/round when sim's same-vclock rounds were dropped."""
+    from parity.checks import _per_round_advances
+    sim = [{"round": r, "vclock_now": v, "ts": 0.0} for r, v in enumerate([0.0, 50.0, 100.0, 100.0, 150.0], 1)]
+    real = [{"round": r, "ts": t} for r, t in enumerate([0.0, 50.0, 100.0, 100.3, 150.0], 1)]
+    s, r = _per_round_advances(sim, use_vclock=True), _per_round_advances(real, use_vclock=False)
+    assert len(s) == len(r) == 4
+    assert abs(sum(s) / len(s) - sum(r) / len(r)) < 1e-9

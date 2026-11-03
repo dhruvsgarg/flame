@@ -1,0 +1,6 @@
+# F42c speech stages (the f42c dispatcher died on an ssh timeout after C0 / C1R finished; FX-N129).
+name: f42cs
+common: "--lease-from-telemetry --gpu-cpus-per-trainer 0.1 --scale-smoke 43200 --gate"
+stages:
+  - {id: S0, args: "--tier F42 --gpu-share 2 --datasets google_speech --baselines oort,oort_star,feddance,fedavg --phases 'gs_F42_s0u_ctl gs_F42_s0u_fdstar'"}
+  - {id: S1, args: "--tier F42 --gpu-share 2 --datasets google_speech --baselines oort,oort_star,feddance,fedavg --phases 'gs_F42_s50u_ctl gs_F42_s50u_fdstar'"}

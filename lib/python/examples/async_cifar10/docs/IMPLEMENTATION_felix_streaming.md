@@ -1,68 +1,16 @@
 # Implementation — Felix Streaming Misprioritization Experiment
 
+> **DEPRECATED — reference only.** The single source of truth is [ROBUST_FL_READINESS.md](../../_metadata/ROBUST_FL_READINESS.md) → [FELIX_READINESS.md](../../_metadata/FELIX_READINESS.md). This file only gets trimmed from here on as its content moves there; don't add to it.
+
 Engineering record for the experiment in [EXPERIMENT_felix_streaming.md](EXPERIMENT_felix_streaming.md).
 Status: **implemented on branch `dg/fix_sim_fidelity`** (this doc doubles as the
 change map + acceptance criteria). Paths are repo-relative.
 
 ---
 
-## ▶ RESUME HERE (checkpoint — 2026‑06‑11)
+## ▶ RESUME HERE
 
-**Where we are:** all code, configs, and docs are written and **statically
-validated** (every touched `.py` compiles; the 4 per‑node YAMLs parse with
-injection on the `*_oracle` arm only; the stagger formula is byte‑identical across
-trainer / offline oracle / online injector). **Nothing has been run** — no smoke
-test, no sweep. Nothing committed (branch `dg/fix_sim_fidelity`). Env: `dg_flame`
-conda. All commands below run from `lib/python/examples/async_cifar10/`.
-
-**Design recap:** 8 arms = `{felix, oort, refl, feddance} × {B, B_oracle}`, uniform
-streaming, n=50, α=0.1, syn_0, aggGoal=10, sim mode, stop at 20 consecutive evals
-≥ 60%. `B_oracle` = same selector as `B` + aggregator‑side true‑utility injection
-(no selector changes). Split across 4 nodes, one `B + B_oracle` pair each.
-
-**Do these in order:**
-
-1. **Smoke test (one GPU box) — validate the online injector end‑to‑end.** This is
-   the only piece not yet run; do it first.
-   ```bash
-   scripts/run_felix_streaming.sh smoke
-   ```
-   Pass criteria: aggregator log shows `[ORACLE_INJECT] ... set 50/50 utilities`
-   each round on `*_oracle` arms; the target‑stop fires (`[TARGET_STOP]`);
-   checkpoints land in each `experiments/run_*smoke*/checkpoints/`; the trailing
-   `oracle_misselection.py` + `felix_streaming_figures.py` finish without error.
-   If the injector misbehaves, the **offline counterfactual is the validated
-   fallback** (run the baselines without injection; per‑baseline disparity still
-   comes from `oracle_misselection.py`).
-
-2. **Calibrate the streaming horizon** from the smoke/pilot. In
-   `scripts/gen_n50_experiment.py` set `HORIZON_S` (and caps `ROUNDS_CAP`,
-   `MAX_RUNTIME_S`) so data is still unlocking through most of training (check the
-   per‑round `vclock_now` span vs `full_after_s`); re‑run the generator.
-
-3. **Production sweep — on each node i (1..4), with that node's GPU count:**
-   ```bash
-   FELIX_NUM_GPUS=<gpus on this node> scripts/run_felix_streaming.sh node <i>
-   ```
-   node1=felix, node2=feddance, node3=oort, node4=refl (each runs `B` then
-   `B_oracle`). Writes `experiments/run_*` (oracle dirs suffixed `_node<i>`).
-
-4. **Pool + analyze on ONE box** once all nodes finish:
-   ```bash
-   # rsync every node's experiments/run_*_n50_alpha0.1_* into one experiments/
-   scripts/run_felix_streaming.sh analyze     # oracle replay (per baseline) + figures
-   ```
-   Figures → `experiments/figures/`; drop them into the placeholders in
-   [EXPERIMENT_felix_streaming.md](EXPERIMENT_felix_streaming.md).
-
-5. **Phase 2 (later): staggered streaming.** Set `STAGGER_CONDITIONS = [False, True]`
-   in `scripts/gen_n50_experiment.py`, regenerate, re‑run.
-
-**Open follow‑ups** (non‑blocking): 4 named figures still stubbed (see §E); the
-global `OracleSelector`/`baselines.yaml oracle` entry is unused (optional ceiling,
-safe to delete); per‑round central eval cost is `n` forward passes (lower
-`sample_size` if it dominates). Full detail: §C (injector), Verification checklist,
-Follow‑ups at the bottom.
+Moved to `_metadata/FELIX_READINESS.md` FX-N13.
 
 ---
 

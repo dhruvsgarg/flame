@@ -1,1803 +1,2703 @@
-description: Global trainer registry with intrinsic properties
+description: "Global trainer registry. Backprop task time (cifar, speech) = FedScale device model (fedscale_device_id, compute_ms_per_sample, bandwidth_kbps; FX-D197). training_delay_s / speed_class: FluxTune (fwdllm) only."
 num_trainers: 300
 trainers:
   trainer_001:
     trainer_id: 1
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580370
+    fedscale_device_id: 1
+    compute_ms_per_sample: 153.0
+    bandwidth_kbps: 2209.615982329485
     training_delay_s: '4.0'
     speed_class: fast
     mobiperf_device_id: device_001
   trainer_002:
     trainer_id: 2
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580371
+    fedscale_device_id: 2
+    compute_ms_per_sample: 39.0
+    bandwidth_kbps: 18437.311985652217
     training_delay_s: '16.0'
     speed_class: very_slow
     mobiperf_device_id: device_002
   trainer_003:
     trainer_id: 3
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580372
+    fedscale_device_id: 3
+    compute_ms_per_sample: 22.0
+    bandwidth_kbps: 22915.494847737755
     training_delay_s: '13.0'
     speed_class: very_slow
     mobiperf_device_id: device_003
   trainer_004:
     trainer_id: 4
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580373
+    fedscale_device_id: 4
+    compute_ms_per_sample: 149.0
+    bandwidth_kbps: 13507.696000153657
     training_delay_s: '7.0'
     speed_class: medium
     mobiperf_device_id: device_004
   trainer_005:
     trainer_id: 5
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580374
+    fedscale_device_id: 5
+    compute_ms_per_sample: 29.0
+    bandwidth_kbps: 6924.407283130328
     training_delay_s: '18.0'
     speed_class: very_slow
     mobiperf_device_id: device_005
   trainer_006:
     trainer_id: 6
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580375
+    fedscale_device_id: 6
+    compute_ms_per_sample: 138.0
+    bandwidth_kbps: 14506.494272424507
     training_delay_s: '5.0'
     speed_class: medium
     mobiperf_device_id: device_006
   trainer_007:
     trainer_id: 7
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580376
+    fedscale_device_id: 7
+    compute_ms_per_sample: 176.0
+    bandwidth_kbps: 32545.573620752573
     training_delay_s: '10.0'
     speed_class: slow
     mobiperf_device_id: device_007
   trainer_008:
     trainer_id: 8
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580377
+    fedscale_device_id: 8
+    compute_ms_per_sample: 44.0
+    bandwidth_kbps: 42360.068898122656
     training_delay_s: '17.0'
     speed_class: very_slow
     mobiperf_device_id: device_008
   trainer_009:
     trainer_id: 9
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580378
+    fedscale_device_id: 9
+    compute_ms_per_sample: 154.0
+    bandwidth_kbps: 1931.2100827831061
     training_delay_s: '13.0'
     speed_class: very_slow
     mobiperf_device_id: device_009
   trainer_010:
     trainer_id: 10
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580379
+    fedscale_device_id: 10
+    compute_ms_per_sample: 64.0
+    bandwidth_kbps: 3345.713888063672
     training_delay_s: '11.0'
     speed_class: slow
     mobiperf_device_id: device_010
   trainer_011:
     trainer_id: 11
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580380
+    fedscale_device_id: 11
+    compute_ms_per_sample: 138.0
+    bandwidth_kbps: 7367.469193678867
     training_delay_s: '11.0'
     speed_class: slow
     mobiperf_device_id: device_011
   trainer_012:
     trainer_id: 12
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580381
+    fedscale_device_id: 12
+    compute_ms_per_sample: 40.0
+    bandwidth_kbps: 4241.066499003477
     training_delay_s: '19.0'
     speed_class: very_slow
     mobiperf_device_id: device_012
   trainer_013:
     trainer_id: 13
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580382
+    fedscale_device_id: 13
+    compute_ms_per_sample: 28.0
+    bandwidth_kbps: 1184.0519555475319
     training_delay_s: '10.0'
     speed_class: slow
     mobiperf_device_id: device_013
   trainer_014:
     trainer_id: 14
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580383
+    fedscale_device_id: 14
+    compute_ms_per_sample: 15.0
+    bandwidth_kbps: 3146.9061485778047
     training_delay_s: '3.0'
     speed_class: fast
     mobiperf_device_id: device_014
   trainer_015:
     trainer_id: 15
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580384
+    fedscale_device_id: 15
+    compute_ms_per_sample: 25.0
+    bandwidth_kbps: 3824.6230841666006
     training_delay_s: '6.0'
     speed_class: medium
     mobiperf_device_id: device_015
   trainer_016:
     trainer_id: 16
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580385
+    fedscale_device_id: 16
+    compute_ms_per_sample: 72.0
+    bandwidth_kbps: 32545.573620752573
     training_delay_s: '13.0'
     speed_class: very_slow
     mobiperf_device_id: device_016
   trainer_017:
     trainer_id: 17
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580386
+    fedscale_device_id: 17
+    compute_ms_per_sample: 192.0
+    bandwidth_kbps: 2621.5871497118596
     training_delay_s: '14.0'
     speed_class: very_slow
     mobiperf_device_id: device_017
   trainer_018:
     trainer_id: 18
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580387
+    fedscale_device_id: 18
+    compute_ms_per_sample: 143.0
+    bandwidth_kbps: 2217.173394694422
     training_delay_s: '9.0'
     speed_class: slow
     mobiperf_device_id: device_018
   trainer_019:
     trainer_id: 19
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580388
+    fedscale_device_id: 19
+    compute_ms_per_sample: 136.0
+    bandwidth_kbps: 8858.753535644008
     training_delay_s: '2.0'
     speed_class: fast
     mobiperf_device_id: device_019
   trainer_020:
     trainer_id: 20
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580389
+    fedscale_device_id: 20
+    compute_ms_per_sample: 146.0
+    bandwidth_kbps: 2855.518125543935
     training_delay_s: '47.0'
     speed_class: very_slow
     mobiperf_device_id: device_020
   trainer_021:
     trainer_id: 21
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580390
+    fedscale_device_id: 21
+    compute_ms_per_sample: 159.0
+    bandwidth_kbps: 2903.641246394103
     training_delay_s: '4.0'
     speed_class: fast
     mobiperf_device_id: device_021
   trainer_022:
     trainer_id: 22
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580391
+    fedscale_device_id: 22
+    compute_ms_per_sample: 24.0
+    bandwidth_kbps: 24825.222157090775
     training_delay_s: '11.0'
     speed_class: slow
     mobiperf_device_id: device_022
   trainer_023:
     trainer_id: 23
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580392
+    fedscale_device_id: 23
+    compute_ms_per_sample: 189.0
+    bandwidth_kbps: 15842.066193766534
     training_delay_s: '21.0'
     speed_class: very_slow
     mobiperf_device_id: device_023
   trainer_024:
     trainer_id: 24
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580393
+    fedscale_device_id: 24
+    compute_ms_per_sample: 41.0
+    bandwidth_kbps: 28807.650799179883
     training_delay_s: '12.0'
     speed_class: slow
     mobiperf_device_id: device_024
   trainer_025:
     trainer_id: 25
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580394
+    fedscale_device_id: 25
+    compute_ms_per_sample: 49.0
+    bandwidth_kbps: 1857.7542127713916
     training_delay_s: '15.0'
     speed_class: very_slow
     mobiperf_device_id: device_025
   trainer_026:
     trainer_id: 26
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580395
+    fedscale_device_id: 26
+    compute_ms_per_sample: 30.0
+    bandwidth_kbps: 2065.0137550748263
     training_delay_s: '2.0'
     speed_class: fast
     mobiperf_device_id: device_026
   trainer_027:
     trainer_id: 27
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580396
+    fedscale_device_id: 27
+    compute_ms_per_sample: 23.0
+    bandwidth_kbps: 7392.993085887681
     training_delay_s: '13.0'
     speed_class: very_slow
     mobiperf_device_id: device_027
   trainer_028:
     trainer_id: 28
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580397
+    fedscale_device_id: 28
+    compute_ms_per_sample: 21.0
+    bandwidth_kbps: 1924.7223737730505
     training_delay_s: '11.0'
     speed_class: slow
     mobiperf_device_id: device_028
   trainer_029:
     trainer_id: 29
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580398
+    fedscale_device_id: 29
+    compute_ms_per_sample: 41.0
+    bandwidth_kbps: 2546.24232202083
     training_delay_s: '8.0'
     speed_class: medium
     mobiperf_device_id: device_029
   trainer_030:
     trainer_id: 30
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580399
+    fedscale_device_id: 30
+    compute_ms_per_sample: 156.0
+    bandwidth_kbps: 10442.319676342106
     training_delay_s: '15.0'
     speed_class: very_slow
     mobiperf_device_id: device_030
   trainer_031:
     trainer_id: 31
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580400
+    fedscale_device_id: 31
+    compute_ms_per_sample: 192.0
+    bandwidth_kbps: 4918.150263564624
     training_delay_s: '12.0'
     speed_class: slow
     mobiperf_device_id: device_031
   trainer_032:
     trainer_id: 32
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580401
+    fedscale_device_id: 32
+    compute_ms_per_sample: 148.0
+    bandwidth_kbps: 1097.2596458419018
     training_delay_s: '7.0'
     speed_class: medium
     mobiperf_device_id: device_032
   trainer_033:
     trainer_id: 33
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580402
+    fedscale_device_id: 33
+    compute_ms_per_sample: 183.0
+    bandwidth_kbps: 33464.97
     training_delay_s: '6.0'
     speed_class: medium
     mobiperf_device_id: device_033
   trainer_034:
     trainer_id: 34
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580403
+    fedscale_device_id: 34
+    compute_ms_per_sample: 145.0
+    bandwidth_kbps: 8727.591590166872
     training_delay_s: '21.0'
     speed_class: very_slow
     mobiperf_device_id: device_034
   trainer_035:
     trainer_id: 35
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580404
+    fedscale_device_id: 35
+    compute_ms_per_sample: 23.0
+    bandwidth_kbps: 1655.0869744396773
     training_delay_s: '8.0'
     speed_class: medium
     mobiperf_device_id: device_035
   trainer_036:
     trainer_id: 36
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580405
+    fedscale_device_id: 36
+    compute_ms_per_sample: 28.0
+    bandwidth_kbps: 4241.066499003477
     training_delay_s: '2.0'
     speed_class: fast
     mobiperf_device_id: device_036
   trainer_037:
     trainer_id: 37
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580406
+    fedscale_device_id: 37
+    compute_ms_per_sample: 21.0
+    bandwidth_kbps: 63892.25865924355
     training_delay_s: '9.0'
     speed_class: slow
     mobiperf_device_id: device_037
   trainer_038:
     trainer_id: 38
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580407
+    fedscale_device_id: 38
+    compute_ms_per_sample: 15.0
+    bandwidth_kbps: 31718.890073603783
     training_delay_s: '8.0'
     speed_class: medium
     mobiperf_device_id: device_038
   trainer_039:
     trainer_id: 39
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580408
+    fedscale_device_id: 39
+    compute_ms_per_sample: 156.0
+    bandwidth_kbps: 6100.98200438069
     training_delay_s: '18.0'
     speed_class: very_slow
     mobiperf_device_id: device_039
   trainer_040:
     trainer_id: 40
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580409
+    fedscale_device_id: 40
+    compute_ms_per_sample: 27.0
+    bandwidth_kbps: 31079.54055631987
     training_delay_s: '7.0'
     speed_class: medium
     mobiperf_device_id: device_040
   trainer_041:
     trainer_id: 41
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580410
+    fedscale_device_id: 41
+    compute_ms_per_sample: 75.0
+    bandwidth_kbps: 115252.40990763082
     training_delay_s: '21.0'
     speed_class: very_slow
     mobiperf_device_id: device_041
   trainer_042:
     trainer_id: 42
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580411
+    fedscale_device_id: 42
+    compute_ms_per_sample: 40.0
+    bandwidth_kbps: 11951.128241319064
     training_delay_s: '13.0'
     speed_class: very_slow
     mobiperf_device_id: device_042
   trainer_043:
     trainer_id: 43
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580412
+    fedscale_device_id: 43
+    compute_ms_per_sample: 148.0
+    bandwidth_kbps: 2839.2213281553854
     training_delay_s: '10.0'
     speed_class: slow
     mobiperf_device_id: device_043
   trainer_044:
     trainer_id: 44
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580413
+    fedscale_device_id: 44
+    compute_ms_per_sample: 18.0
+    bandwidth_kbps: 2055.3498246579957
     training_delay_s: '5.0'
     speed_class: medium
     mobiperf_device_id: device_044
   trainer_045:
     trainer_id: 45
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580414
+    fedscale_device_id: 45
+    compute_ms_per_sample: 18.0
+    bandwidth_kbps: 5648.109619499134
     training_delay_s: '15.0'
     speed_class: very_slow
     mobiperf_device_id: device_045
   trainer_046:
     trainer_id: 46
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580415
+    fedscale_device_id: 46
+    compute_ms_per_sample: 19.0
+    bandwidth_kbps: 4977.848335644711
     training_delay_s: '24.0'
     speed_class: very_slow
     mobiperf_device_id: device_046
   trainer_047:
     trainer_id: 47
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580416
+    fedscale_device_id: 47
+    compute_ms_per_sample: 82.0
+    bandwidth_kbps: 70834.35783865782
     training_delay_s: '5.0'
     speed_class: medium
     mobiperf_device_id: device_047
   trainer_048:
     trainer_id: 48
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580417
+    fedscale_device_id: 48
+    compute_ms_per_sample: 168.0
+    bandwidth_kbps: 7715.247023242061
     training_delay_s: '7.0'
     speed_class: medium
     mobiperf_device_id: device_048
   trainer_049:
     trainer_id: 49
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580418
+    fedscale_device_id: 49
+    compute_ms_per_sample: 23.0
+    bandwidth_kbps: 4647.477833353735
     training_delay_s: '14.0'
     speed_class: very_slow
     mobiperf_device_id: device_049
   trainer_050:
     trainer_id: 50
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580419
+    fedscale_device_id: 50
+    compute_ms_per_sample: 154.0
+    bandwidth_kbps: 3502.51020829259
     training_delay_s: '12.0'
     speed_class: slow
     mobiperf_device_id: device_050
   trainer_051:
     trainer_id: 51
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580420
+    fedscale_device_id: 51
+    compute_ms_per_sample: 143.0
+    bandwidth_kbps: 14245.531261193886
     training_delay_s: '5.0'
     speed_class: medium
     mobiperf_device_id: device_051
   trainer_052:
     trainer_id: 52
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580421
+    fedscale_device_id: 52
+    compute_ms_per_sample: 143.0
+    bandwidth_kbps: 8096.560508726679
     training_delay_s: '16.0'
     speed_class: very_slow
     mobiperf_device_id: device_052
   trainer_053:
     trainer_id: 53
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580422
+    fedscale_device_id: 53
+    compute_ms_per_sample: 27.0
+    bandwidth_kbps: 67958.78315823629
     training_delay_s: '14.0'
     speed_class: very_slow
     mobiperf_device_id: device_053
   trainer_054:
     trainer_id: 54
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580423
+    fedscale_device_id: 54
+    compute_ms_per_sample: 191.0
+    bandwidth_kbps: 2637.990718150793
     training_delay_s: '4.0'
     speed_class: fast
     mobiperf_device_id: device_054
   trainer_055:
     trainer_id: 55
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580424
+    fedscale_device_id: 55
+    compute_ms_per_sample: 153.0
+    bandwidth_kbps: 22888.467692307695
     training_delay_s: '14.0'
     speed_class: very_slow
     mobiperf_device_id: device_055
   trainer_056:
     trainer_id: 56
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580425
+    fedscale_device_id: 56
+    compute_ms_per_sample: 27.0
+    bandwidth_kbps: 4904.547648501977
     training_delay_s: '23.0'
     speed_class: very_slow
     mobiperf_device_id: device_056
   trainer_057:
     trainer_id: 57
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580426
+    fedscale_device_id: 57
+    compute_ms_per_sample: 30.0
+    bandwidth_kbps: 4596.307662111975
     training_delay_s: '30.0'
     speed_class: very_slow
     mobiperf_device_id: device_057
   trainer_058:
     trainer_id: 58
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580427
+    fedscale_device_id: 58
+    compute_ms_per_sample: 27.0
+    bandwidth_kbps: 1659.5303771847364
     training_delay_s: '21.0'
     speed_class: very_slow
     mobiperf_device_id: device_058
   trainer_059:
     trainer_id: 59
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580428
+    fedscale_device_id: 59
+    compute_ms_per_sample: 15.0
+    bandwidth_kbps: 1841.2539136666098
     training_delay_s: '28.0'
     speed_class: very_slow
     mobiperf_device_id: device_059
   trainer_060:
     trainer_id: 60
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580429
+    fedscale_device_id: 60
+    compute_ms_per_sample: 183.0
+    bandwidth_kbps: 1016.8808511071711
     training_delay_s: '12.0'
     speed_class: slow
     mobiperf_device_id: device_060
   trainer_061:
     trainer_id: 61
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580430
+    fedscale_device_id: 61
+    compute_ms_per_sample: 40.0
+    bandwidth_kbps: 1901.6888655072644
     training_delay_s: '8.0'
     speed_class: medium
     mobiperf_device_id: device_061
   trainer_062:
     trainer_id: 62
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580431
+    fedscale_device_id: 62
+    compute_ms_per_sample: 192.0
+    bandwidth_kbps: 2904.5589866692726
     training_delay_s: '3.0'
     speed_class: fast
     mobiperf_device_id: device_062
   trainer_063:
     trainer_id: 63
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580432
+    fedscale_device_id: 63
+    compute_ms_per_sample: 31.0
+    bandwidth_kbps: 3843.4681731702744
     training_delay_s: '10.0'
     speed_class: slow
     mobiperf_device_id: device_063
   trainer_064:
     trainer_id: 64
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580433
+    fedscale_device_id: 64
+    compute_ms_per_sample: 156.0
+    bandwidth_kbps: 5289.78951038109
     training_delay_s: '20.0'
     speed_class: very_slow
     mobiperf_device_id: device_064
   trainer_065:
     trainer_id: 65
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580434
+    fedscale_device_id: 65
+    compute_ms_per_sample: 40.0
+    bandwidth_kbps: 4504.865153655598
     training_delay_s: '2.0'
     speed_class: fast
     mobiperf_device_id: device_065
   trainer_066:
     trainer_id: 66
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580435
+    fedscale_device_id: 66
+    compute_ms_per_sample: 27.0
+    bandwidth_kbps: 12221.982886732778
     training_delay_s: '22.0'
     speed_class: very_slow
     mobiperf_device_id: device_066
   trainer_067:
     trainer_id: 67
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580436
+    fedscale_device_id: 67
+    compute_ms_per_sample: 96.0
+    bandwidth_kbps: 1136.4121868672014
     training_delay_s: '7.0'
     speed_class: medium
     mobiperf_device_id: device_067
   trainer_068:
     trainer_id: 68
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580437
+    fedscale_device_id: 68
+    compute_ms_per_sample: 150.0
+    bandwidth_kbps: 3869.773969576111
     training_delay_s: '6.0'
     speed_class: medium
     mobiperf_device_id: device_068
   trainer_069:
     trainer_id: 69
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580438
+    fedscale_device_id: 69
+    compute_ms_per_sample: 72.0
+    bandwidth_kbps: 1819.7471560742927
     training_delay_s: '15.0'
     speed_class: very_slow
     mobiperf_device_id: device_069
   trainer_070:
     trainer_id: 70
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580439
+    fedscale_device_id: 70
+    compute_ms_per_sample: 160.0
+    bandwidth_kbps: 2253.335774792474
     training_delay_s: '5.0'
     speed_class: medium
     mobiperf_device_id: device_070
   trainer_071:
     trainer_id: 71
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580440
+    fedscale_device_id: 71
+    compute_ms_per_sample: 156.0
+    bandwidth_kbps: 5485.216127839542
     training_delay_s: '5.0'
     speed_class: medium
     mobiperf_device_id: device_071
   trainer_072:
     trainer_id: 72
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580441
+    fedscale_device_id: 72
+    compute_ms_per_sample: 30.0
+    bandwidth_kbps: 24004.736574978717
     training_delay_s: '4.0'
     speed_class: fast
     mobiperf_device_id: device_072
   trainer_073:
     trainer_id: 73
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580442
+    fedscale_device_id: 73
+    compute_ms_per_sample: 19.0
+    bandwidth_kbps: 7388.711238435047
     training_delay_s: '21.0'
     speed_class: very_slow
     mobiperf_device_id: device_073
   trainer_074:
     trainer_id: 74
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580443
+    fedscale_device_id: 74
+    compute_ms_per_sample: 192.0
+    bandwidth_kbps: 28472.16013839707
     training_delay_s: '2.0'
     speed_class: fast
     mobiperf_device_id: device_074
   trainer_075:
     trainer_id: 75
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580444
+    fedscale_device_id: 75
+    compute_ms_per_sample: 25.0
+    bandwidth_kbps: 2290.9446288967583
     training_delay_s: '28.0'
     speed_class: very_slow
     mobiperf_device_id: device_075
   trainer_076:
     trainer_id: 76
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580445
+    fedscale_device_id: 76
+    compute_ms_per_sample: 50.0
+    bandwidth_kbps: 1085.0805604161899
     training_delay_s: '3.0'
     speed_class: fast
     mobiperf_device_id: device_076
   trainer_077:
     trainer_id: 77
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580446
+    fedscale_device_id: 77
+    compute_ms_per_sample: 173.0
+    bandwidth_kbps: 12221.982886732778
     training_delay_s: '10.0'
     speed_class: slow
     mobiperf_device_id: device_077
   trainer_078:
     trainer_id: 78
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580447
+    fedscale_device_id: 78
+    compute_ms_per_sample: 21.0
+    bandwidth_kbps: 1720.5605778789811
     training_delay_s: '22.0'
     speed_class: very_slow
     mobiperf_device_id: device_078
   trainer_079:
     trainer_id: 79
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580448
+    fedscale_device_id: 79
+    compute_ms_per_sample: 15.0
+    bandwidth_kbps: 5522.303428575063
     training_delay_s: '16.0'
     speed_class: very_slow
     mobiperf_device_id: device_079
   trainer_080:
     trainer_id: 80
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580449
+    fedscale_device_id: 80
+    compute_ms_per_sample: 31.0
+    bandwidth_kbps: 115252.40990763082
     training_delay_s: '5.0'
     speed_class: medium
     mobiperf_device_id: device_080
   trainer_081:
     trainer_id: 81
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580450
+    fedscale_device_id: 81
+    compute_ms_per_sample: 22.0
+    bandwidth_kbps: 21974.95356951726
     training_delay_s: '22.0'
     speed_class: very_slow
     mobiperf_device_id: device_081
   trainer_082:
     trainer_id: 82
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580451
+    fedscale_device_id: 82
+    compute_ms_per_sample: 140.0
+    bandwidth_kbps: 31863.211230339777
     training_delay_s: '9.0'
     speed_class: slow
     mobiperf_device_id: device_082
   trainer_083:
     trainer_id: 83
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580452
+    fedscale_device_id: 83
+    compute_ms_per_sample: 145.0
+    bandwidth_kbps: 12636.345755546148
     training_delay_s: '18.0'
     speed_class: very_slow
     mobiperf_device_id: device_083
   trainer_084:
     trainer_id: 84
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580453
+    fedscale_device_id: 84
+    compute_ms_per_sample: 27.0
+    bandwidth_kbps: 33440.122314608474
     training_delay_s: '14.0'
     speed_class: very_slow
     mobiperf_device_id: device_084
   trainer_085:
     trainer_id: 85
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580454
+    fedscale_device_id: 85
+    compute_ms_per_sample: 22.0
+    bandwidth_kbps: 9143.630802759213
     training_delay_s: '27.0'
     speed_class: very_slow
     mobiperf_device_id: device_085
   trainer_086:
     trainer_id: 86
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580455
+    fedscale_device_id: 86
+    compute_ms_per_sample: 44.0
+    bandwidth_kbps: 1038.0322810179875
     training_delay_s: '3.0'
     speed_class: fast
     mobiperf_device_id: device_086
   trainer_087:
     trainer_id: 87
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580456
+    fedscale_device_id: 87
+    compute_ms_per_sample: 31.0
+    bandwidth_kbps: 8012.5477591895
     training_delay_s: '15.0'
     speed_class: very_slow
     mobiperf_device_id: device_087
   trainer_088:
     trainer_id: 88
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580457
+    fedscale_device_id: 88
+    compute_ms_per_sample: 136.0
+    bandwidth_kbps: 1097.2596458419018
     training_delay_s: '7.0'
     speed_class: medium
     mobiperf_device_id: device_088
   trainer_089:
     trainer_id: 89
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580458
+    fedscale_device_id: 89
+    compute_ms_per_sample: 199.0
+    bandwidth_kbps: 2107.9852309072676
     training_delay_s: '4.0'
     speed_class: fast
     mobiperf_device_id: device_089
   trainer_090:
     trainer_id: 90
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580459
+    fedscale_device_id: 90
+    compute_ms_per_sample: 27.0
+    bandwidth_kbps: 13523.02444615097
     training_delay_s: '10.0'
     speed_class: slow
     mobiperf_device_id: device_090
   trainer_091:
     trainer_id: 91
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580460
+    fedscale_device_id: 91
+    compute_ms_per_sample: 23.0
+    bandwidth_kbps: 4789.241063674561
     training_delay_s: '38.0'
     speed_class: very_slow
     mobiperf_device_id: device_091
   trainer_092:
     trainer_id: 92
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580461
+    fedscale_device_id: 92
+    compute_ms_per_sample: 154.0
+    bandwidth_kbps: 5212.859303235327
     training_delay_s: '3.0'
     speed_class: fast
     mobiperf_device_id: device_092
   trainer_093:
     trainer_id: 93
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580462
+    fedscale_device_id: 93
+    compute_ms_per_sample: 143.0
+    bandwidth_kbps: 7388.711238435047
     training_delay_s: '27.0'
     speed_class: very_slow
     mobiperf_device_id: device_093
   trainer_094:
     trainer_id: 94
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580463
+    fedscale_device_id: 94
+    compute_ms_per_sample: 74.0
+    bandwidth_kbps: 1444.4181396435608
     training_delay_s: '3.0'
     speed_class: fast
     mobiperf_device_id: device_094
   trainer_095:
     trainer_id: 95
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580464
+    fedscale_device_id: 95
+    compute_ms_per_sample: 28.0
+    bandwidth_kbps: 3039.8082691671516
     training_delay_s: '9.0'
     speed_class: slow
     mobiperf_device_id: device_095
   trainer_096:
     trainer_id: 96
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580465
+    fedscale_device_id: 96
+    compute_ms_per_sample: 144.0
+    bandwidth_kbps: 2103.156368798709
     training_delay_s: '12.0'
     speed_class: slow
     mobiperf_device_id: device_096
   trainer_097:
     trainer_id: 97
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580466
+    fedscale_device_id: 97
+    compute_ms_per_sample: 41.0
+    bandwidth_kbps: 14573.073892861643
     training_delay_s: '5.0'
     speed_class: medium
     mobiperf_device_id: device_097
   trainer_098:
     trainer_id: 98
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580467
+    fedscale_device_id: 98
+    compute_ms_per_sample: 28.0
+    bandwidth_kbps: 30466.59348053789
     training_delay_s: '7.0'
     speed_class: medium
     mobiperf_device_id: device_098
   trainer_099:
     trainer_id: 99
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580468
+    fedscale_device_id: 99
+    compute_ms_per_sample: 193.0
+    bandwidth_kbps: 8051.379057213378
     training_delay_s: '17.0'
     speed_class: very_slow
     mobiperf_device_id: device_099
   trainer_100:
     trainer_id: 100
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580469
+    fedscale_device_id: 100
+    compute_ms_per_sample: 41.0
+    bandwidth_kbps: 13371.139055633053
     training_delay_s: '36.0'
     speed_class: very_slow
     mobiperf_device_id: device_100
   trainer_101:
     trainer_id: 101
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580470
+    fedscale_device_id: 101
+    compute_ms_per_sample: 193.0
+    bandwidth_kbps: 7387.928994060325
     training_delay_s: '4.0'
     speed_class: fast
     mobiperf_device_id: device_101
   trainer_102:
     trainer_id: 102
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580471
+    fedscale_device_id: 102
+    compute_ms_per_sample: 23.0
+    bandwidth_kbps: 3824.6230841666006
     training_delay_s: '20.0'
     speed_class: very_slow
     mobiperf_device_id: device_102
   trainer_103:
     trainer_id: 103
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580472
+    fedscale_device_id: 103
+    compute_ms_per_sample: 20.0
+    bandwidth_kbps: 6292.539658913886
     training_delay_s: '3.0'
     speed_class: fast
     mobiperf_device_id: device_103
   trainer_104:
     trainer_id: 104
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580473
+    fedscale_device_id: 104
+    compute_ms_per_sample: 18.0
+    bandwidth_kbps: 1672.371923291186
     training_delay_s: '17.0'
     speed_class: very_slow
     mobiperf_device_id: device_104
   trainer_105:
     trainer_id: 105
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580474
+    fedscale_device_id: 105
+    compute_ms_per_sample: 18.0
+    bandwidth_kbps: 4835.3523601849065
     training_delay_s: '4.0'
     speed_class: fast
     mobiperf_device_id: device_105
   trainer_106:
     trainer_id: 106
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580475
+    fedscale_device_id: 106
+    compute_ms_per_sample: 24.0
+    bandwidth_kbps: 4652.290392827601
     training_delay_s: '26.0'
     speed_class: very_slow
     mobiperf_device_id: device_106
   trainer_107:
     trainer_id: 107
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580476
+    fedscale_device_id: 107
+    compute_ms_per_sample: 27.0
+    bandwidth_kbps: 3039.8082691671516
     training_delay_s: '11.0'
     speed_class: slow
     mobiperf_device_id: device_107
   trainer_108:
     trainer_id: 108
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580477
+    fedscale_device_id: 108
+    compute_ms_per_sample: 74.0
+    bandwidth_kbps: 10445.742857153104
     training_delay_s: '7.0'
     speed_class: medium
     mobiperf_device_id: device_108
   trainer_109:
     trainer_id: 109
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580478
+    fedscale_device_id: 109
+    compute_ms_per_sample: 27.0
+    bandwidth_kbps: 82504.44631466508
     training_delay_s: '29.0'
     speed_class: very_slow
     mobiperf_device_id: device_109
   trainer_110:
     trainer_id: 110
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580479
+    fedscale_device_id: 110
+    compute_ms_per_sample: 193.0
+    bandwidth_kbps: 5575.836092624551
     training_delay_s: '12.0'
     speed_class: slow
     mobiperf_device_id: device_110
   trainer_111:
     trainer_id: 111
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580480
+    fedscale_device_id: 111
+    compute_ms_per_sample: 23.0
+    bandwidth_kbps: 2730.087848891144
     training_delay_s: '11.0'
     speed_class: slow
     mobiperf_device_id: device_111
   trainer_112:
     trainer_id: 112
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580481
+    fedscale_device_id: 112
+    compute_ms_per_sample: 40.0
+    bandwidth_kbps: 14273.427466117982
     training_delay_s: '18.0'
     speed_class: very_slow
     mobiperf_device_id: device_112
   trainer_113:
     trainer_id: 113
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580482
+    fedscale_device_id: 113
+    compute_ms_per_sample: 38.0
+    bandwidth_kbps: 87075.3198171639
     training_delay_s: '21.0'
     speed_class: very_slow
     mobiperf_device_id: device_113
   trainer_114:
     trainer_id: 114
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580483
+    fedscale_device_id: 114
+    compute_ms_per_sample: 143.0
+    bandwidth_kbps: 6384.429196498908
     training_delay_s: '12.0'
     speed_class: slow
     mobiperf_device_id: device_114
   trainer_115:
     trainer_id: 115
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580484
+    fedscale_device_id: 115
+    compute_ms_per_sample: 191.0
+    bandwidth_kbps: 12113.274113975893
     training_delay_s: '6.0'
     speed_class: medium
     mobiperf_device_id: device_115
   trainer_116:
     trainer_id: 116
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580485
+    fedscale_device_id: 116
+    compute_ms_per_sample: 40.0
+    bandwidth_kbps: 6770.194572647147
     training_delay_s: '16.0'
     speed_class: very_slow
     mobiperf_device_id: device_116
   trainer_117:
     trainer_id: 117
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580486
+    fedscale_device_id: 117
+    compute_ms_per_sample: 117.0
+    bandwidth_kbps: 4203.488831823087
     training_delay_s: '8.0'
     speed_class: medium
     mobiperf_device_id: device_117
   trainer_118:
     trainer_id: 118
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580487
+    fedscale_device_id: 118
+    compute_ms_per_sample: 26.0
+    bandwidth_kbps: 19808.991592630166
     training_delay_s: '2.0'
     speed_class: fast
     mobiperf_device_id: device_118
   trainer_119:
     trainer_id: 119
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580488
+    fedscale_device_id: 119
+    compute_ms_per_sample: 64.0
+    bandwidth_kbps: 3267.390151124515
     training_delay_s: '5.0'
     speed_class: medium
     mobiperf_device_id: device_119
   trainer_120:
     trainer_id: 120
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580489
+    fedscale_device_id: 120
+    compute_ms_per_sample: 179.0
+    bandwidth_kbps: 15072.26583149737
     training_delay_s: '12.0'
     speed_class: slow
     mobiperf_device_id: device_120
   trainer_121:
     trainer_id: 121
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580490
+    fedscale_device_id: 121
+    compute_ms_per_sample: 31.0
+    bandwidth_kbps: 2637.990718150793
     training_delay_s: '9.0'
     speed_class: slow
     mobiperf_device_id: device_121
   trainer_122:
     trainer_id: 122
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580491
+    fedscale_device_id: 122
+    compute_ms_per_sample: 21.0
+    bandwidth_kbps: 1076.136588410951
     training_delay_s: '17.0'
     speed_class: very_slow
     mobiperf_device_id: device_122
   trainer_123:
     trainer_id: 123
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580492
+    fedscale_device_id: 123
+    compute_ms_per_sample: 23.0
+    bandwidth_kbps: 3878.6362594793945
     training_delay_s: '10.0'
     speed_class: slow
     mobiperf_device_id: device_123
   trainer_124:
     trainer_id: 124
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580493
+    fedscale_device_id: 124
+    compute_ms_per_sample: 156.0
+    bandwidth_kbps: 23291.68410175639
     training_delay_s: '2.0'
     speed_class: fast
     mobiperf_device_id: device_124
   trainer_125:
     trainer_id: 125
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580494
+    fedscale_device_id: 125
+    compute_ms_per_sample: 176.0
+    bandwidth_kbps: 11539.311025293391
     training_delay_s: '9.0'
     speed_class: slow
     mobiperf_device_id: device_125
   trainer_126:
     trainer_id: 126
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580495
+    fedscale_device_id: 126
+    compute_ms_per_sample: 179.0
+    bandwidth_kbps: 22914.26763636363
     training_delay_s: '10.0'
     speed_class: slow
     mobiperf_device_id: device_126
   trainer_127:
     trainer_id: 127
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580496
+    fedscale_device_id: 127
+    compute_ms_per_sample: 156.0
+    bandwidth_kbps: 100206.60815615153
     training_delay_s: '2.0'
     speed_class: fast
     mobiperf_device_id: device_127
   trainer_128:
     trainer_id: 128
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580497
+    fedscale_device_id: 128
+    compute_ms_per_sample: 24.0
+    bandwidth_kbps: 1807.5789236274024
     training_delay_s: '10.0'
     speed_class: slow
     mobiperf_device_id: device_128
   trainer_129:
     trainer_id: 129
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580498
+    fedscale_device_id: 129
+    compute_ms_per_sample: 183.0
+    bandwidth_kbps: 2839.2213281553854
     training_delay_s: '22.0'
     speed_class: very_slow
     mobiperf_device_id: device_129
   trainer_130:
     trainer_id: 130
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580499
+    fedscale_device_id: 130
+    compute_ms_per_sample: 149.0
+    bandwidth_kbps: 1036.9598718011687
     training_delay_s: '18.0'
     speed_class: very_slow
     mobiperf_device_id: device_130
   trainer_131:
     trainer_id: 131
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580500
+    fedscale_device_id: 131
+    compute_ms_per_sample: 148.0
+    bandwidth_kbps: 2958.563216250499
     training_delay_s: '13.0'
     speed_class: very_slow
     mobiperf_device_id: device_131
   trainer_132:
     trainer_id: 132
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580501
+    fedscale_device_id: 132
+    compute_ms_per_sample: 148.0
+    bandwidth_kbps: 1841.2539136666098
     training_delay_s: '12.0'
     speed_class: slow
     mobiperf_device_id: device_132
   trainer_133:
     trainer_id: 133
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580502
+    fedscale_device_id: 133
+    compute_ms_per_sample: 30.0
+    bandwidth_kbps: 1810.440126491114
     training_delay_s: '2.0'
     speed_class: fast
     mobiperf_device_id: device_133
   trainer_134:
     trainer_id: 134
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580503
+    fedscale_device_id: 134
+    compute_ms_per_sample: 15.0
+    bandwidth_kbps: 1614.7084591617918
     training_delay_s: '12.0'
     speed_class: slow
     mobiperf_device_id: device_134
   trainer_135:
     trainer_id: 135
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580504
+    fedscale_device_id: 135
+    compute_ms_per_sample: 23.0
+    bandwidth_kbps: 31429.81303157679
     training_delay_s: '7.0'
     speed_class: medium
     mobiperf_device_id: device_135
   trainer_136:
     trainer_id: 136
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580505
+    fedscale_device_id: 136
+    compute_ms_per_sample: 46.0
+    bandwidth_kbps: 2185.4310866449496
     training_delay_s: '15.0'
     speed_class: very_slow
     mobiperf_device_id: device_136
   trainer_137:
     trainer_id: 137
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580506
+    fedscale_device_id: 137
+    compute_ms_per_sample: 24.0
+    bandwidth_kbps: 2397.9507295413014
     training_delay_s: '22.0'
     speed_class: very_slow
     mobiperf_device_id: device_137
   trainer_138:
     trainer_id: 138
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580507
+    fedscale_device_id: 138
+    compute_ms_per_sample: 64.0
+    bandwidth_kbps: 2903.641246394103
     training_delay_s: '12.0'
     speed_class: slow
     mobiperf_device_id: device_138
   trainer_139:
     trainer_id: 139
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580508
+    fedscale_device_id: 139
+    compute_ms_per_sample: 42.0
+    bandwidth_kbps: 36021.27728761395
     training_delay_s: '5.0'
     speed_class: medium
     mobiperf_device_id: device_139
   trainer_140:
     trainer_id: 140
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580509
+    fedscale_device_id: 140
+    compute_ms_per_sample: 82.0
+    bandwidth_kbps: 3186.70896142714
     training_delay_s: '2.0'
     speed_class: fast
     mobiperf_device_id: device_140
   trainer_141:
     trainer_id: 141
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580510
+    fedscale_device_id: 141
+    compute_ms_per_sample: 159.0
+    bandwidth_kbps: 3345.713888063672
     training_delay_s: '18.0'
     speed_class: very_slow
     mobiperf_device_id: device_141
   trainer_142:
     trainer_id: 142
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580511
+    fedscale_device_id: 142
+    compute_ms_per_sample: 23.0
+    bandwidth_kbps: 58550.43397771459
     training_delay_s: '15.0'
     speed_class: very_slow
     mobiperf_device_id: device_142
   trainer_143:
     trainer_id: 143
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580512
+    fedscale_device_id: 143
+    compute_ms_per_sample: 24.0
+    bandwidth_kbps: 133144.06129563495
     training_delay_s: '16.0'
     speed_class: very_slow
     mobiperf_device_id: device_143
   trainer_144:
     trainer_id: 144
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580513
+    fedscale_device_id: 144
+    compute_ms_per_sample: 191.0
+    bandwidth_kbps: 2621.5871497118596
     training_delay_s: '3.0'
     speed_class: fast
     mobiperf_device_id: device_144
   trainer_145:
     trainer_id: 145
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580514
+    fedscale_device_id: 145
+    compute_ms_per_sample: 56.0
+    bandwidth_kbps: 9847.506913265517
     training_delay_s: '4.0'
     speed_class: fast
     mobiperf_device_id: device_145
   trainer_146:
     trainer_id: 146
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580515
+    fedscale_device_id: 146
+    compute_ms_per_sample: 50.0
+    bandwidth_kbps: 50250.31595895948
     training_delay_s: '8.0'
     speed_class: medium
     mobiperf_device_id: device_146
   trainer_147:
     trainer_id: 147
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580516
+    fedscale_device_id: 147
+    compute_ms_per_sample: 140.0
+    bandwidth_kbps: 13882.365038088128
     training_delay_s: '29.0'
     speed_class: very_slow
     mobiperf_device_id: device_147
   trainer_148:
     trainer_id: 148
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580517
+    fedscale_device_id: 148
+    compute_ms_per_sample: 56.0
+    bandwidth_kbps: 1966.5755229307952
     training_delay_s: '10.0'
     speed_class: slow
     mobiperf_device_id: device_148
   trainer_149:
     trainer_id: 149
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580518
+    fedscale_device_id: 149
+    compute_ms_per_sample: 24.0
+    bandwidth_kbps: 1535.3765967210584
     training_delay_s: '7.0'
     speed_class: medium
     mobiperf_device_id: device_149
   trainer_150:
     trainer_id: 150
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580519
+    fedscale_device_id: 150
+    compute_ms_per_sample: 21.0
+    bandwidth_kbps: 20191.499024950936
     training_delay_s: '8.0'
     speed_class: medium
     mobiperf_device_id: device_150
   trainer_151:
     trainer_id: 151
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580520
+    fedscale_device_id: 151
+    compute_ms_per_sample: 136.0
+    bandwidth_kbps: 36433.393285623584
     training_delay_s: '9.0'
     speed_class: slow
     mobiperf_device_id: device_151
   trainer_152:
     trainer_id: 152
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580521
+    fedscale_device_id: 152
+    compute_ms_per_sample: 143.0
+    bandwidth_kbps: 87075.3198171639
     training_delay_s: '7.0'
     speed_class: medium
     mobiperf_device_id: device_152
   trainer_153:
     trainer_id: 153
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580522
+    fedscale_device_id: 153
+    compute_ms_per_sample: 149.0
+    bandwidth_kbps: 9629.112850642998
     training_delay_s: '22.0'
     speed_class: very_slow
     mobiperf_device_id: device_153
   trainer_154:
     trainer_id: 154
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580523
+    fedscale_device_id: 154
+    compute_ms_per_sample: 21.0
+    bandwidth_kbps: 14506.494272424507
     training_delay_s: '22.0'
     speed_class: very_slow
     mobiperf_device_id: device_154
   trainer_155:
     trainer_id: 155
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580524
+    fedscale_device_id: 155
+    compute_ms_per_sample: 183.0
+    bandwidth_kbps: 12636.345755546148
     training_delay_s: '10.0'
     speed_class: slow
     mobiperf_device_id: device_155
   trainer_156:
     trainer_id: 156
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580525
+    fedscale_device_id: 156
+    compute_ms_per_sample: 24.0
+    bandwidth_kbps: 1696.4310543229876
     training_delay_s: '4.0'
     speed_class: fast
     mobiperf_device_id: device_156
   trainer_157:
     trainer_id: 157
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580526
+    fedscale_device_id: 157
+    compute_ms_per_sample: 31.0
+    bandwidth_kbps: 1380.6223618385432
     training_delay_s: '3.0'
     speed_class: fast
     mobiperf_device_id: device_157
   trainer_158:
     trainer_id: 158
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580527
+    fedscale_device_id: 158
+    compute_ms_per_sample: 21.0
+    bandwidth_kbps: 29916.861414634146
     training_delay_s: '32.0'
     speed_class: very_slow
     mobiperf_device_id: device_158
   trainer_159:
     trainer_id: 159
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580528
+    fedscale_device_id: 159
+    compute_ms_per_sample: 174.0
+    bandwidth_kbps: 2621.5871497118596
     training_delay_s: '3.0'
     speed_class: fast
     mobiperf_device_id: device_159
   trainer_160:
     trainer_id: 160
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580529
+    fedscale_device_id: 160
+    compute_ms_per_sample: 56.0
+    bandwidth_kbps: 36701.71338549243
     training_delay_s: '12.0'
     speed_class: slow
     mobiperf_device_id: device_160
   trainer_161:
     trainer_id: 161
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580530
+    fedscale_device_id: 161
+    compute_ms_per_sample: 19.0
+    bandwidth_kbps: 2725.2003691612053
     training_delay_s: '8.0'
     speed_class: medium
     mobiperf_device_id: device_161
   trainer_162:
     trainer_id: 162
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580531
+    fedscale_device_id: 162
+    compute_ms_per_sample: 42.0
+    bandwidth_kbps: 3370.4545642706166
     training_delay_s: '9.0'
     speed_class: slow
     mobiperf_device_id: device_162
   trainer_163:
     trainer_id: 163
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580532
+    fedscale_device_id: 163
+    compute_ms_per_sample: 51.0
+    bandwidth_kbps: 1136.4121868672014
     training_delay_s: '10.0'
     speed_class: slow
     mobiperf_device_id: device_163
   trainer_164:
     trainer_id: 164
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580533
+    fedscale_device_id: 164
+    compute_ms_per_sample: 27.0
+    bandwidth_kbps: 2855.518125543935
     training_delay_s: '5.0'
     speed_class: medium
     mobiperf_device_id: device_164
   trainer_165:
     trainer_id: 165
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580534
+    fedscale_device_id: 165
+    compute_ms_per_sample: 18.0
+    bandwidth_kbps: 12815.720432094939
     training_delay_s: '16.0'
     speed_class: very_slow
     mobiperf_device_id: device_165
   trainer_166:
     trainer_id: 166
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580535
+    fedscale_device_id: 166
+    compute_ms_per_sample: 148.0
+    bandwidth_kbps: 12963.324102944245
     training_delay_s: '4.0'
     speed_class: fast
     mobiperf_device_id: device_166
   trainer_167:
     trainer_id: 167
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580536
+    fedscale_device_id: 167
+    compute_ms_per_sample: 176.0
+    bandwidth_kbps: 3370.4545642706166
     training_delay_s: '2.0'
     speed_class: fast
     mobiperf_device_id: device_167
   trainer_168:
     trainer_id: 168
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580537
+    fedscale_device_id: 168
+    compute_ms_per_sample: 136.0
+    bandwidth_kbps: 9629.112850642998
     training_delay_s: '25.0'
     speed_class: very_slow
     mobiperf_device_id: device_168
   trainer_169:
     trainer_id: 169
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580538
+    fedscale_device_id: 169
+    compute_ms_per_sample: 154.0
+    bandwidth_kbps: 31618.446460295465
     training_delay_s: '6.0'
     speed_class: medium
     mobiperf_device_id: device_169
   trainer_170:
     trainer_id: 170
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580539
+    fedscale_device_id: 170
+    compute_ms_per_sample: 64.0
+    bandwidth_kbps: 5232.342020239354
     training_delay_s: '23.0'
     speed_class: very_slow
     mobiperf_device_id: device_170
   trainer_171:
     trainer_id: 171
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580540
+    fedscale_device_id: 171
+    compute_ms_per_sample: 21.0
+    bandwidth_kbps: 132721.63279259493
     training_delay_s: '9.0'
     speed_class: slow
     mobiperf_device_id: device_171
   trainer_172:
     trainer_id: 172
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580541
+    fedscale_device_id: 172
+    compute_ms_per_sample: 134.0
+    bandwidth_kbps: 2492.295708258692
     training_delay_s: '7.0'
     speed_class: medium
     mobiperf_device_id: device_172
   trainer_173:
     trainer_id: 173
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580542
+    fedscale_device_id: 173
+    compute_ms_per_sample: 168.0
+    bandwidth_kbps: 4730.815972240296
     training_delay_s: '5.0'
     speed_class: medium
     mobiperf_device_id: device_173
   trainer_174:
     trainer_id: 174
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580543
+    fedscale_device_id: 174
+    compute_ms_per_sample: 18.0
+    bandwidth_kbps: 6399.877029981482
     training_delay_s: '21.0'
     speed_class: very_slow
     mobiperf_device_id: device_174
   trainer_175:
     trainer_id: 175
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580544
+    fedscale_device_id: 175
+    compute_ms_per_sample: 54.0
+    bandwidth_kbps: 2401.1727463733982
     training_delay_s: '18.0'
     speed_class: very_slow
     mobiperf_device_id: device_175
   trainer_176:
     trainer_id: 176
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580545
+    fedscale_device_id: 176
+    compute_ms_per_sample: 149.0
+    bandwidth_kbps: 6659.027482343811
     training_delay_s: '4.0'
     speed_class: fast
     mobiperf_device_id: device_176
   trainer_177:
     trainer_id: 177
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580546
+    fedscale_device_id: 177
+    compute_ms_per_sample: 51.0
+    bandwidth_kbps: 14630.406878190872
     training_delay_s: '3.0'
     speed_class: fast
     mobiperf_device_id: device_177
   trainer_178:
     trainer_id: 178
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580547
+    fedscale_device_id: 178
+    compute_ms_per_sample: 23.0
+    bandwidth_kbps: 10181.845082899526
     training_delay_s: '7.0'
     speed_class: medium
     mobiperf_device_id: device_178
   trainer_179:
     trainer_id: 179
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580548
+    fedscale_device_id: 179
+    compute_ms_per_sample: 72.0
+    bandwidth_kbps: 4742.638170810537
     training_delay_s: '24.0'
     speed_class: very_slow
     mobiperf_device_id: device_179
   trainer_180:
     trainer_id: 180
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580549
+    fedscale_device_id: 180
+    compute_ms_per_sample: 41.0
+    bandwidth_kbps: 6387.07229516645
     training_delay_s: '16.0'
     speed_class: very_slow
     mobiperf_device_id: device_180
   trainer_181:
     trainer_id: 181
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580550
+    fedscale_device_id: 181
+    compute_ms_per_sample: 192.0
+    bandwidth_kbps: 24004.736574978717
     training_delay_s: '56.0'
     speed_class: very_slow
     mobiperf_device_id: device_181
   trainer_182:
     trainer_id: 182
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580551
+    fedscale_device_id: 182
+    compute_ms_per_sample: 23.0
+    bandwidth_kbps: 3843.4681731702744
     training_delay_s: '19.0'
     speed_class: very_slow
     mobiperf_device_id: device_182
   trainer_183:
     trainer_id: 183
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580552
+    fedscale_device_id: 183
+    compute_ms_per_sample: 21.0
+    bandwidth_kbps: 2124.3843013483306
     training_delay_s: '6.0'
     speed_class: medium
     mobiperf_device_id: device_183
   trainer_184:
     trainer_id: 184
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580553
+    fedscale_device_id: 184
+    compute_ms_per_sample: 192.0
+    bandwidth_kbps: 4652.290392827601
     training_delay_s: '7.0'
     speed_class: medium
     mobiperf_device_id: device_184
   trainer_185:
     trainer_id: 185
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580554
+    fedscale_device_id: 185
+    compute_ms_per_sample: 154.0
+    bandwidth_kbps: 8170.928806526902
     training_delay_s: '16.0'
     speed_class: very_slow
     mobiperf_device_id: device_185
   trainer_186:
     trainer_id: 186
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580555
+    fedscale_device_id: 186
+    compute_ms_per_sample: 162.0
+    bandwidth_kbps: 1976.82897458832
     training_delay_s: '11.0'
     speed_class: slow
     mobiperf_device_id: device_186
   trainer_187:
     trainer_id: 187
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580556
+    fedscale_device_id: 187
+    compute_ms_per_sample: 117.0
+    bandwidth_kbps: 4757.925003607145
     training_delay_s: '31.0'
     speed_class: very_slow
     mobiperf_device_id: device_187
   trainer_188:
     trainer_id: 188
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580557
+    fedscale_device_id: 188
+    compute_ms_per_sample: 41.0
+    bandwidth_kbps: 14506.494272424507
     training_delay_s: '8.0'
     speed_class: medium
     mobiperf_device_id: device_188
   trainer_189:
     trainer_id: 189
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580558
+    fedscale_device_id: 189
+    compute_ms_per_sample: 15.0
+    bandwidth_kbps: 20732.67059038755
     training_delay_s: '18.0'
     speed_class: very_slow
     mobiperf_device_id: device_189
   trainer_190:
     trainer_id: 190
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580559
+    fedscale_device_id: 190
+    compute_ms_per_sample: 23.0
+    bandwidth_kbps: 28472.16013839707
     training_delay_s: '4.0'
     speed_class: fast
     mobiperf_device_id: device_190
   trainer_191:
     trainer_id: 191
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580560
+    fedscale_device_id: 191
+    compute_ms_per_sample: 23.0
+    bandwidth_kbps: 1393.2277009351494
     training_delay_s: '13.0'
     speed_class: very_slow
     mobiperf_device_id: device_191
   trainer_192:
     trainer_id: 192
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580561
+    fedscale_device_id: 192
+    compute_ms_per_sample: 23.0
+    bandwidth_kbps: 86384.97278932433
     training_delay_s: '17.0'
     speed_class: very_slow
     mobiperf_device_id: device_192
   trainer_193:
     trainer_id: 193
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580562
+    fedscale_device_id: 193
+    compute_ms_per_sample: 25.0
+    bandwidth_kbps: 57906.55068629575
     training_delay_s: '2.0'
     speed_class: fast
     mobiperf_device_id: device_193
   trainer_194:
     trainer_id: 194
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580563
+    fedscale_device_id: 194
+    compute_ms_per_sample: 137.0
+    bandwidth_kbps: 14711.449275497373
     training_delay_s: '6.0'
     speed_class: medium
     mobiperf_device_id: device_194
   trainer_195:
     trainer_id: 195
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580564
+    fedscale_device_id: 195
+    compute_ms_per_sample: 25.0
+    bandwidth_kbps: 4803.596449228287
     training_delay_s: '8.0'
     speed_class: medium
     mobiperf_device_id: device_195
   trainer_196:
     trainer_id: 196
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580565
+    fedscale_device_id: 196
+    compute_ms_per_sample: 175.0
+    bandwidth_kbps: 7532.024856534167
     training_delay_s: '13.0'
     speed_class: very_slow
     mobiperf_device_id: device_196
   trainer_197:
     trainer_id: 197
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580566
+    fedscale_device_id: 197
+    compute_ms_per_sample: 189.0
+    bandwidth_kbps: 6399.877029981482
     training_delay_s: '6.0'
     speed_class: medium
     mobiperf_device_id: device_197
   trainer_198:
     trainer_id: 198
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580567
+    fedscale_device_id: 198
+    compute_ms_per_sample: 24.0
+    bandwidth_kbps: 2860.405835654235
     training_delay_s: '7.0'
     speed_class: medium
     mobiperf_device_id: device_198
   trainer_199:
     trainer_id: 199
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580568
+    fedscale_device_id: 199
+    compute_ms_per_sample: 25.0
+    bandwidth_kbps: 6100.98200438069
     training_delay_s: '9.0'
     speed_class: slow
     mobiperf_device_id: device_199
   trainer_200:
     trainer_id: 200
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580569
+    fedscale_device_id: 200
+    compute_ms_per_sample: 50.0
+    bandwidth_kbps: 4571.163620535417
     training_delay_s: '6.0'
     speed_class: medium
     mobiperf_device_id: device_200
   trainer_201:
     trainer_id: 201
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580570
+    fedscale_device_id: 201
+    compute_ms_per_sample: 18.0
+    bandwidth_kbps: 2711.8379534614946
     training_delay_s: '18.0'
     speed_class: very_slow
     mobiperf_device_id: device_201
   trainer_202:
     trainer_id: 202
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580571
+    fedscale_device_id: 202
+    compute_ms_per_sample: 23.0
+    bandwidth_kbps: 4456.184635923774
     training_delay_s: '2.0'
     speed_class: fast
     mobiperf_device_id: device_202
   trainer_203:
     trainer_id: 203
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580572
+    fedscale_device_id: 203
+    compute_ms_per_sample: 189.0
+    bandwidth_kbps: 5648.109619499134
     training_delay_s: '9.0'
     speed_class: slow
     mobiperf_device_id: device_203
   trainer_204:
     trainer_id: 204
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580573
+    fedscale_device_id: 204
+    compute_ms_per_sample: 27.0
+    bandwidth_kbps: 2253.335774792474
     training_delay_s: '21.0'
     speed_class: very_slow
     mobiperf_device_id: device_204
   trainer_205:
     trainer_id: 205
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580574
+    fedscale_device_id: 205
+    compute_ms_per_sample: 19.0
+    bandwidth_kbps: 1990.0882973490488
     training_delay_s: '24.0'
     speed_class: very_slow
     mobiperf_device_id: device_205
   trainer_206:
     trainer_id: 206
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580575
+    fedscale_device_id: 206
+    compute_ms_per_sample: 134.0
+    bandwidth_kbps: 6074.702413493102
     training_delay_s: '8.0'
     speed_class: medium
     mobiperf_device_id: device_206
   trainer_207:
     trainer_id: 207
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580576
+    fedscale_device_id: 207
+    compute_ms_per_sample: 155.0
+    bandwidth_kbps: 26614.495526381503
     training_delay_s: '14.0'
     speed_class: very_slow
     mobiperf_device_id: device_207
   trainer_208:
     trainer_id: 208
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580577
+    fedscale_device_id: 208
+    compute_ms_per_sample: 148.0
+    bandwidth_kbps: 26614.495526381503
     training_delay_s: '6.0'
     speed_class: medium
     mobiperf_device_id: device_208
   trainer_209:
     trainer_id: 209
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580578
+    fedscale_device_id: 209
+    compute_ms_per_sample: 56.0
+    bandwidth_kbps: 2230.4954217010277
     training_delay_s: '7.0'
     speed_class: medium
     mobiperf_device_id: device_209
   trainer_210:
     trainer_id: 210
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580579
+    fedscale_device_id: 210
+    compute_ms_per_sample: 23.0
+    bandwidth_kbps: 5961.660790092723
     training_delay_s: '4.0'
     speed_class: fast
     mobiperf_device_id: device_210
   trainer_211:
     trainer_id: 211
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580580
+    fedscale_device_id: 211
+    compute_ms_per_sample: 173.0
+    bandwidth_kbps: 29916.861414634146
     training_delay_s: '5.0'
     speed_class: medium
     mobiperf_device_id: device_211
   trainer_212:
     trainer_id: 212
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580581
+    fedscale_device_id: 212
+    compute_ms_per_sample: 25.0
+    bandwidth_kbps: 4161.290119724033
     training_delay_s: '14.0'
     speed_class: very_slow
     mobiperf_device_id: device_212
   trainer_213:
     trainer_id: 213
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580582
+    fedscale_device_id: 213
+    compute_ms_per_sample: 25.0
+    bandwidth_kbps: 12963.324102944245
     training_delay_s: '12.0'
     speed_class: slow
     mobiperf_device_id: device_213
   trainer_214:
     trainer_id: 214
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580583
+    fedscale_device_id: 214
+    compute_ms_per_sample: 19.0
+    bandwidth_kbps: 1926.1046157499825
     training_delay_s: '8.0'
     speed_class: medium
     mobiperf_device_id: device_214
   trainer_215:
     trainer_id: 215
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580584
+    fedscale_device_id: 215
+    compute_ms_per_sample: 15.0
+    bandwidth_kbps: 4036.5686298609216
     training_delay_s: '5.0'
     speed_class: medium
     mobiperf_device_id: device_215
   trainer_216:
     trainer_id: 216
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580585
+    fedscale_device_id: 216
+    compute_ms_per_sample: 18.0
+    bandwidth_kbps: 4632.768910167103
     training_delay_s: '4.0'
     speed_class: fast
     mobiperf_device_id: device_216
   trainer_217:
     trainer_id: 217
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580586
+    fedscale_device_id: 217
+    compute_ms_per_sample: 28.0
+    bandwidth_kbps: 3859.9434580440084
     training_delay_s: '28.0'
     speed_class: very_slow
     mobiperf_device_id: device_217
   trainer_218:
     trainer_id: 218
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580587
+    fedscale_device_id: 218
+    compute_ms_per_sample: 41.0
+    bandwidth_kbps: 44803.7380516996
     training_delay_s: '31.0'
     speed_class: very_slow
     mobiperf_device_id: device_218
   trainer_219:
     trainer_id: 219
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580588
+    fedscale_device_id: 219
+    compute_ms_per_sample: 23.0
+    bandwidth_kbps: 36433.393285623584
     training_delay_s: '11.0'
     speed_class: slow
     mobiperf_device_id: device_219
   trainer_220:
     trainer_id: 220
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580589
+    fedscale_device_id: 220
+    compute_ms_per_sample: 46.0
+    bandwidth_kbps: 10473.36639536247
     training_delay_s: '26.0'
     speed_class: very_slow
     mobiperf_device_id: device_220
   trainer_221:
     trainer_id: 221
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580590
+    fedscale_device_id: 221
+    compute_ms_per_sample: 24.0
+    bandwidth_kbps: 1368.2464709694145
     training_delay_s: '9.0'
     speed_class: slow
     mobiperf_device_id: device_221
   trainer_222:
     trainer_id: 222
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580591
+    fedscale_device_id: 222
+    compute_ms_per_sample: 28.0
+    bandwidth_kbps: 14273.427466117982
     training_delay_s: '13.0'
     speed_class: very_slow
     mobiperf_device_id: device_222
   trainer_223:
     trainer_id: 223
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580592
+    fedscale_device_id: 223
+    compute_ms_per_sample: 154.0
+    bandwidth_kbps: 8869.773157203956
     training_delay_s: '14.0'
     speed_class: very_slow
     mobiperf_device_id: device_223
   trainer_224:
     trainer_id: 224
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580593
+    fedscale_device_id: 224
+    compute_ms_per_sample: 154.0
+    bandwidth_kbps: 25923.65065115265
     training_delay_s: '12.0'
     speed_class: slow
     mobiperf_device_id: device_224
   trainer_225:
     trainer_id: 225
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580594
+    fedscale_device_id: 225
+    compute_ms_per_sample: 15.0
+    bandwidth_kbps: 6384.429196498908
     training_delay_s: '17.0'
     speed_class: very_slow
     mobiperf_device_id: device_225
   trainer_226:
     trainer_id: 226
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580595
+    fedscale_device_id: 226
+    compute_ms_per_sample: 24.0
+    bandwidth_kbps: 4849.641475513536
     training_delay_s: '13.0'
     speed_class: very_slow
     mobiperf_device_id: device_226
   trainer_227:
     trainer_id: 227
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580596
+    fedscale_device_id: 227
+    compute_ms_per_sample: 23.0
+    bandwidth_kbps: 63892.25865924355
     training_delay_s: '5.0'
     speed_class: medium
     mobiperf_device_id: device_227
   trainer_228:
     trainer_id: 228
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580597
+    fedscale_device_id: 228
+    compute_ms_per_sample: 31.0
+    bandwidth_kbps: 14630.406878190872
     training_delay_s: '5.0'
     speed_class: medium
     mobiperf_device_id: device_228
   trainer_229:
     trainer_id: 229
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580598
+    fedscale_device_id: 229
+    compute_ms_per_sample: 173.0
+    bandwidth_kbps: 1931.8958161206792
     training_delay_s: '12.0'
     speed_class: slow
     mobiperf_device_id: device_229
   trainer_230:
     trainer_id: 230
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580599
+    fedscale_device_id: 230
+    compute_ms_per_sample: 22.0
+    bandwidth_kbps: 14245.531261193886
     training_delay_s: '4.0'
     speed_class: fast
     mobiperf_device_id: device_230
   trainer_231:
     trainer_id: 231
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580600
+    fedscale_device_id: 231
+    compute_ms_per_sample: 176.0
+    bandwidth_kbps: 93130.95904074324
     training_delay_s: '2.0'
     speed_class: fast
     mobiperf_device_id: device_231
   trainer_232:
     trainer_id: 232
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580601
+    fedscale_device_id: 232
+    compute_ms_per_sample: 28.0
+    bandwidth_kbps: 26614.495526381503
     training_delay_s: '27.0'
     speed_class: very_slow
     mobiperf_device_id: device_232
   trainer_233:
     trainer_id: 233
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580602
+    fedscale_device_id: 233
+    compute_ms_per_sample: 136.0
+    bandwidth_kbps: 82504.44631466508
     training_delay_s: '19.0'
     speed_class: very_slow
     mobiperf_device_id: device_233
   trainer_234:
     trainer_id: 234
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580603
+    fedscale_device_id: 234
+    compute_ms_per_sample: 42.0
+    bandwidth_kbps: 9143.630802759213
     training_delay_s: '12.0'
     speed_class: slow
     mobiperf_device_id: device_234
   trainer_235:
     trainer_id: 235
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580604
+    fedscale_device_id: 235
+    compute_ms_per_sample: 25.0
+    bandwidth_kbps: 6074.702413493102
     training_delay_s: '6.0'
     speed_class: medium
     mobiperf_device_id: device_235
   trainer_236:
     trainer_id: 236
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580605
+    fedscale_device_id: 236
+    compute_ms_per_sample: 21.0
+    bandwidth_kbps: 13876.22062689568
     training_delay_s: '7.0'
     speed_class: medium
     mobiperf_device_id: device_236
   trainer_237:
     trainer_id: 237
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580606
+    fedscale_device_id: 237
+    compute_ms_per_sample: 18.0
+    bandwidth_kbps: 3146.9061485778047
     training_delay_s: '12.0'
     speed_class: slow
     mobiperf_device_id: device_237
   trainer_238:
     trainer_id: 238
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580607
+    fedscale_device_id: 238
+    compute_ms_per_sample: 27.0
+    bandwidth_kbps: 38791.73606918406
     training_delay_s: '5.0'
     speed_class: medium
     mobiperf_device_id: device_238
   trainer_239:
     trainer_id: 239
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580608
+    fedscale_device_id: 239
+    compute_ms_per_sample: 24.0
+    bandwidth_kbps: 29106.497277899587
     training_delay_s: '14.0'
     speed_class: very_slow
     mobiperf_device_id: device_239
   trainer_240:
     trainer_id: 240
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580609
+    fedscale_device_id: 240
+    compute_ms_per_sample: 21.0
+    bandwidth_kbps: 2588.825109754843
     training_delay_s: '5.0'
     speed_class: medium
     mobiperf_device_id: device_240
   trainer_241:
     trainer_id: 241
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580610
+    fedscale_device_id: 241
+    compute_ms_per_sample: 23.0
+    bandwidth_kbps: 1135.91448815284
     training_delay_s: '5.0'
     speed_class: medium
     mobiperf_device_id: device_241
   trainer_242:
     trainer_id: 242
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580611
+    fedscale_device_id: 242
+    compute_ms_per_sample: 25.0
+    bandwidth_kbps: 1909.398419353762
     training_delay_s: '9.0'
     speed_class: slow
     mobiperf_device_id: device_242
   trainer_243:
     trainer_id: 243
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580612
+    fedscale_device_id: 243
+    compute_ms_per_sample: 27.0
+    bandwidth_kbps: 1168.6454781036323
     training_delay_s: '6.0'
     speed_class: medium
     mobiperf_device_id: device_243
   trainer_244:
     trainer_id: 244
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580613
+    fedscale_device_id: 244
+    compute_ms_per_sample: 24.0
+    bandwidth_kbps: 2668.8476992876217
     training_delay_s: '8.0'
     speed_class: medium
     mobiperf_device_id: device_244
   trainer_245:
     trainer_id: 245
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580614
+    fedscale_device_id: 245
+    compute_ms_per_sample: 24.0
+    bandwidth_kbps: 6928.077161758286
     training_delay_s: '20.0'
     speed_class: very_slow
     mobiperf_device_id: device_245
   trainer_246:
     trainer_id: 246
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580615
+    fedscale_device_id: 246
+    compute_ms_per_sample: 19.0
+    bandwidth_kbps: 10445.742857153104
     training_delay_s: '5.0'
     speed_class: medium
     mobiperf_device_id: device_246
   trainer_247:
     trainer_id: 247
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580616
+    fedscale_device_id: 247
+    compute_ms_per_sample: 50.0
+    bandwidth_kbps: 5575.836092624551
     training_delay_s: '23.0'
     speed_class: very_slow
     mobiperf_device_id: device_247
   trainer_248:
     trainer_id: 248
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580617
+    fedscale_device_id: 248
+    compute_ms_per_sample: 15.0
+    bandwidth_kbps: 4837.260171862482
     training_delay_s: '12.0'
     speed_class: slow
     mobiperf_device_id: device_248
   trainer_249:
     trainer_id: 249
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580618
+    fedscale_device_id: 249
+    compute_ms_per_sample: 24.0
+    bandwidth_kbps: 1702.585372487073
     training_delay_s: '2.0'
     speed_class: fast
     mobiperf_device_id: device_249
   trainer_250:
     trainer_id: 250
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580619
+    fedscale_device_id: 250
+    compute_ms_per_sample: 136.0
+    bandwidth_kbps: 2253.335774792474
     training_delay_s: '10.0'
     speed_class: slow
     mobiperf_device_id: device_250
   trainer_251:
     trainer_id: 251
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580620
+    fedscale_device_id: 251
+    compute_ms_per_sample: 22.0
+    bandwidth_kbps: 6924.407283130328
     training_delay_s: '31.0'
     speed_class: very_slow
     mobiperf_device_id: device_251
   trainer_252:
     trainer_id: 252
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580621
+    fedscale_device_id: 252
+    compute_ms_per_sample: 31.0
+    bandwidth_kbps: 4798.764414377165
     training_delay_s: '6.0'
     speed_class: medium
     mobiperf_device_id: device_252
   trainer_253:
     trainer_id: 253
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580622
+    fedscale_device_id: 253
+    compute_ms_per_sample: 145.0
+    bandwidth_kbps: 8869.773157203956
     training_delay_s: '12.0'
     speed_class: slow
     mobiperf_device_id: device_253
   trainer_254:
     trainer_id: 254
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580623
+    fedscale_device_id: 254
+    compute_ms_per_sample: 144.0
+    bandwidth_kbps: 1702.585372487073
     training_delay_s: '11.0'
     speed_class: slow
     mobiperf_device_id: device_254
   trainer_255:
     trainer_id: 255
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580624
+    fedscale_device_id: 255
+    compute_ms_per_sample: 19.0
+    bandwidth_kbps: 3482.216155841956
     training_delay_s: '5.0'
     speed_class: medium
     mobiperf_device_id: device_255
   trainer_256:
     trainer_id: 256
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580625
+    fedscale_device_id: 256
+    compute_ms_per_sample: 189.0
+    bandwidth_kbps: 1966.5755229307952
     training_delay_s: '11.0'
     speed_class: slow
     mobiperf_device_id: device_256
   trainer_257:
     trainer_id: 257
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580626
+    fedscale_device_id: 257
+    compute_ms_per_sample: 72.0
+    bandwidth_kbps: 8407.646888497546
     training_delay_s: '3.0'
     speed_class: fast
     mobiperf_device_id: device_257
   trainer_258:
     trainer_id: 258
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580627
+    fedscale_device_id: 258
+    compute_ms_per_sample: 23.0
+    bandwidth_kbps: 1986.7806861356996
     training_delay_s: '23.0'
     speed_class: very_slow
     mobiperf_device_id: device_258
   trainer_259:
     trainer_id: 259
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580628
+    fedscale_device_id: 259
+    compute_ms_per_sample: 39.0
+    bandwidth_kbps: 6932.448696588237
     training_delay_s: '16.0'
     speed_class: very_slow
     mobiperf_device_id: device_259
   trainer_260:
     trainer_id: 260
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580629
+    fedscale_device_id: 260
+    compute_ms_per_sample: 148.0
+    bandwidth_kbps: 1867.0084973720475
     training_delay_s: '5.0'
     speed_class: medium
     mobiperf_device_id: device_260
   trainer_261:
     trainer_id: 261
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580630
+    fedscale_device_id: 261
+    compute_ms_per_sample: 136.0
+    bandwidth_kbps: 32545.573620752573
     training_delay_s: '10.0'
     speed_class: slow
     mobiperf_device_id: device_261
   trainer_262:
     trainer_id: 262
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580631
+    fedscale_device_id: 262
+    compute_ms_per_sample: 146.0
+    bandwidth_kbps: 4596.307662111975
     training_delay_s: '28.0'
     speed_class: very_slow
     mobiperf_device_id: device_262
   trainer_263:
     trainer_id: 263
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580632
+    fedscale_device_id: 263
+    compute_ms_per_sample: 172.0
+    bandwidth_kbps: 12177.136944879272
     training_delay_s: '2.0'
     speed_class: fast
     mobiperf_device_id: device_263
   trainer_264:
     trainer_id: 264
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580633
+    fedscale_device_id: 264
+    compute_ms_per_sample: 23.0
+    bandwidth_kbps: 8143.750181701445
     training_delay_s: '29.0'
     speed_class: very_slow
     mobiperf_device_id: device_264
   trainer_265:
     trainer_id: 265
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580634
+    fedscale_device_id: 265
+    compute_ms_per_sample: 150.0
+    bandwidth_kbps: 10445.742857153104
     training_delay_s: '16.0'
     speed_class: very_slow
     mobiperf_device_id: device_265
   trainer_266:
     trainer_id: 266
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580635
+    fedscale_device_id: 266
+    compute_ms_per_sample: 24.0
+    bandwidth_kbps: 8555.352771044612
     training_delay_s: '12.0'
     speed_class: slow
     mobiperf_device_id: device_266
   trainer_267:
     trainer_id: 267
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580636
+    fedscale_device_id: 267
+    compute_ms_per_sample: 193.0
+    bandwidth_kbps: 23291.68410175639
     training_delay_s: '19.0'
     speed_class: very_slow
     mobiperf_device_id: device_267
   trainer_268:
     trainer_id: 268
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580637
+    fedscale_device_id: 268
+    compute_ms_per_sample: 41.0
+    bandwidth_kbps: 1708.327324406004
     training_delay_s: '23.0'
     speed_class: very_slow
     mobiperf_device_id: device_268
   trainer_269:
     trainer_id: 269
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580638
+    fedscale_device_id: 269
+    compute_ms_per_sample: 19.0
+    bandwidth_kbps: 12844.302284037876
     training_delay_s: '3.0'
     speed_class: fast
     mobiperf_device_id: device_269
   trainer_270:
     trainer_id: 270
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580639
+    fedscale_device_id: 270
+    compute_ms_per_sample: 19.0
+    bandwidth_kbps: 13702.634065353626
     training_delay_s: '7.0'
     speed_class: medium
     mobiperf_device_id: device_270
   trainer_271:
     trainer_id: 271
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580640
+    fedscale_device_id: 271
+    compute_ms_per_sample: 154.0
+    bandwidth_kbps: 12113.274113975893
     training_delay_s: '3.0'
     speed_class: fast
     mobiperf_device_id: device_271
   trainer_272:
     trainer_id: 272
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580641
+    fedscale_device_id: 272
+    compute_ms_per_sample: 148.0
+    bandwidth_kbps: 4789.241063674561
     training_delay_s: '10.0'
     speed_class: slow
     mobiperf_device_id: device_272
   trainer_273:
     trainer_id: 273
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580642
+    fedscale_device_id: 273
+    compute_ms_per_sample: 27.0
+    bandwidth_kbps: 55447.59250578869
     training_delay_s: '40.0'
     speed_class: very_slow
     mobiperf_device_id: device_273
   trainer_274:
     trainer_id: 274
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580643
+    fedscale_device_id: 274
+    compute_ms_per_sample: 22.0
+    bandwidth_kbps: 5320.409089720225
     training_delay_s: '15.0'
     speed_class: very_slow
     mobiperf_device_id: device_274
   trainer_275:
     trainer_id: 275
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580644
+    fedscale_device_id: 275
+    compute_ms_per_sample: 154.0
+    bandwidth_kbps: 8727.591590166872
     training_delay_s: '4.0'
     speed_class: fast
     mobiperf_device_id: device_275
   trainer_276:
     trainer_id: 276
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580645
+    fedscale_device_id: 276
+    compute_ms_per_sample: 24.0
+    bandwidth_kbps: 10079.288768025888
     training_delay_s: '17.0'
     speed_class: very_slow
     mobiperf_device_id: device_276
   trainer_277:
     trainer_id: 277
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580646
+    fedscale_device_id: 277
+    compute_ms_per_sample: 155.0
+    bandwidth_kbps: 9847.506913265517
     training_delay_s: '9.0'
     speed_class: slow
     mobiperf_device_id: device_277
   trainer_278:
     trainer_id: 278
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580647
+    fedscale_device_id: 278
+    compute_ms_per_sample: 41.0
+    bandwidth_kbps: 4145.887289843971
     training_delay_s: '11.0'
     speed_class: slow
     mobiperf_device_id: device_278
   trainer_279:
     trainer_id: 279
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580648
+    fedscale_device_id: 279
+    compute_ms_per_sample: 22.0
+    bandwidth_kbps: 38210.3052487804
     training_delay_s: '2.0'
     speed_class: fast
     mobiperf_device_id: device_279
   trainer_280:
     trainer_id: 280
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580649
+    fedscale_device_id: 280
+    compute_ms_per_sample: 23.0
+    bandwidth_kbps: 5320.409089720225
     training_delay_s: '14.0'
     speed_class: very_slow
     mobiperf_device_id: device_280
   trainer_281:
     trainer_id: 281
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580650
+    fedscale_device_id: 281
+    compute_ms_per_sample: 23.0
+    bandwidth_kbps: 2904.5589866692726
     training_delay_s: '4.0'
     speed_class: fast
     mobiperf_device_id: device_281
   trainer_282:
     trainer_id: 282
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580651
+    fedscale_device_id: 282
+    compute_ms_per_sample: 44.0
+    bandwidth_kbps: 3791.2377054622675
     training_delay_s: '4.0'
     speed_class: fast
     mobiperf_device_id: device_282
   trainer_283:
     trainer_id: 283
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580652
+    fedscale_device_id: 283
+    compute_ms_per_sample: 176.0
+    bandwidth_kbps: 13371.139055633053
     training_delay_s: '21.0'
     speed_class: very_slow
     mobiperf_device_id: device_283
   trainer_284:
     trainer_id: 284
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580653
+    fedscale_device_id: 284
+    compute_ms_per_sample: 191.0
+    bandwidth_kbps: 7714.494835917806
     training_delay_s: '4.0'
     speed_class: fast
     mobiperf_device_id: device_284
   trainer_285:
     trainer_id: 285
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580654
+    fedscale_device_id: 285
+    compute_ms_per_sample: 27.0
+    bandwidth_kbps: 6718.417727308594
     training_delay_s: '34.0'
     speed_class: very_slow
     mobiperf_device_id: device_285
   trainer_286:
     trainer_id: 286
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580655
+    fedscale_device_id: 286
+    compute_ms_per_sample: 56.0
+    bandwidth_kbps: 1931.2100827831061
     training_delay_s: '8.0'
     speed_class: medium
     mobiperf_device_id: device_286
   trainer_287:
     trainer_id: 287
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580656
+    fedscale_device_id: 287
+    compute_ms_per_sample: 143.0
+    bandwidth_kbps: 35589.54791311136
     training_delay_s: '12.0'
     speed_class: slow
     mobiperf_device_id: device_287
   trainer_288:
     trainer_id: 288
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580657
+    fedscale_device_id: 288
+    compute_ms_per_sample: 30.0
+    bandwidth_kbps: 3431.6140031107498
     training_delay_s: '4.0'
     speed_class: fast
     mobiperf_device_id: device_288
   trainer_289:
     trainer_id: 289
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580658
+    fedscale_device_id: 289
+    compute_ms_per_sample: 159.0
+    bandwidth_kbps: 2903.641246394103
     training_delay_s: '4.0'
     speed_class: fast
     mobiperf_device_id: device_289
   trainer_290:
     trainer_id: 290
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580659
+    fedscale_device_id: 290
+    compute_ms_per_sample: 176.0
+    bandwidth_kbps: 6928.077161758286
     training_delay_s: '15.0'
     speed_class: very_slow
     mobiperf_device_id: device_290
   trainer_291:
     trainer_id: 291
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580660
+    fedscale_device_id: 291
+    compute_ms_per_sample: 24.0
+    bandwidth_kbps: 5961.660790092723
     training_delay_s: '23.0'
     speed_class: very_slow
     mobiperf_device_id: device_291
   trainer_292:
     trainer_id: 292
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580661
+    fedscale_device_id: 292
+    compute_ms_per_sample: 168.0
+    bandwidth_kbps: 5961.660790092723
     training_delay_s: '19.0'
     speed_class: very_slow
     mobiperf_device_id: device_292
   trainer_293:
     trainer_id: 293
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580662
+    fedscale_device_id: 293
+    compute_ms_per_sample: 15.0
+    bandwidth_kbps: 2230.4954217010277
     training_delay_s: '8.0'
     speed_class: medium
     mobiperf_device_id: device_293
   trainer_294:
     trainer_id: 294
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580663
+    fedscale_device_id: 294
+    compute_ms_per_sample: 22.0
+    bandwidth_kbps: 14711.449275497373
     training_delay_s: '4.0'
     speed_class: fast
     mobiperf_device_id: device_294
   trainer_295:
     trainer_id: 295
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580664
+    fedscale_device_id: 295
+    compute_ms_per_sample: 191.0
+    bandwidth_kbps: 14273.427466117982
     training_delay_s: '19.0'
     speed_class: very_slow
     mobiperf_device_id: device_295
   trainer_296:
     trainer_id: 296
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580665
+    fedscale_device_id: 296
+    compute_ms_per_sample: 136.0
+    bandwidth_kbps: 1016.8808511071711
     training_delay_s: '14.0'
     speed_class: very_slow
     mobiperf_device_id: device_296
   trainer_297:
     trainer_id: 297
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580666
+    fedscale_device_id: 297
+    compute_ms_per_sample: 160.0
+    bandwidth_kbps: 2401.1727463733982
     training_delay_s: '9.0'
     speed_class: slow
     mobiperf_device_id: device_297
   trainer_298:
     trainer_id: 298
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580667
+    fedscale_device_id: 298
+    compute_ms_per_sample: 15.0
+    bandwidth_kbps: 9847.506913265517
     training_delay_s: '12.0'
     speed_class: slow
     mobiperf_device_id: device_298
   trainer_299:
     trainer_id: 299
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580668
+    fedscale_device_id: 299
+    compute_ms_per_sample: 41.0
+    bandwidth_kbps: 9629.112850642998
     training_delay_s: '9.0'
     speed_class: slow
     mobiperf_device_id: device_299
   trainer_300:
     trainer_id: 300
     task_id: 505f9fc483cf4df68a2409257b5fad7d3c580669
+    fedscale_device_id: 300
+    compute_ms_per_sample: 32.0
+    bandwidth_kbps: 22998.350769230765
     training_delay_s: '11.0'
     speed_class: slow
     mobiperf_device_id: device_300

@@ -65,24 +65,24 @@ def test_resolve_trace_name_no_keys_set(tmp_path):
 def test_resolve_trace_name_track_trainer_avail_priority(tmp_path):
     # All three keys set -> trackTrainerAvail wins (debug_run.sh's own priority).
     _write_config(tmp_path, {
-        "trackTrainerAvail": {"enabled": "True", "type": "ORACULAR", "trace": "syn_20"},
-        "client_notify": {"enabled": "False", "trace": "syn_50"},
+        "trackTrainerAvail": {"enabled": "True", "type": "ORACULAR", "trace": "syn_20_3st"},
+        "client_notify": {"enabled": "False", "trace": "syn_50_3st"},
         "availability_trace": "syn_0",
     })
-    assert resolve_trace_name(str(tmp_path)) == "syn_20"
+    assert resolve_trace_name(str(tmp_path)) == "syn_20_3st"
 
 
 def test_resolve_trace_name_client_notify_fallback(tmp_path):
     _write_config(tmp_path, {
         "trackTrainerAvail": {"enabled": "False", "type": "NA"},
-        "client_notify": {"enabled": "False", "trace": "syn_20"},
+        "client_notify": {"enabled": "False", "trace": "syn_20_3st"},
     })
-    assert resolve_trace_name(str(tmp_path)) == "syn_20"
+    assert resolve_trace_name(str(tmp_path)) == "syn_20_3st"
 
 
 def test_resolve_trace_name_availability_trace_fallback(tmp_path):
-    _write_config(tmp_path, {"availability_trace": "syn_50"})
-    assert resolve_trace_name(str(tmp_path)) == "syn_50"
+    _write_config(tmp_path, {"availability_trace": "syn_50_3st"})
+    assert resolve_trace_name(str(tmp_path)) == "syn_50_3st"
 
 
 def test_load_ground_truth_none_when_no_trace():
@@ -243,3 +243,18 @@ def test_a6_syn0_regression_perfect_fidelity():
     res = trainer_trace_fidelity_parity(trainers, sel, "sim", gt)
     assert res["ok"], res
     assert res["mean_err"] == 0.0
+
+
+def test_a6_ignores_observations_past_the_run_span():
+    # PR36-short: a trainer logs exact transitions after the last train selection (span 130 s); scored on [0, span] only.
+    gt = {"t1_0001": SortedDict({0.0: "AVL_TRAIN", 150.0: "AVL_EVAL", 209.25: "UN_AVL"})}
+    trainers = {"0001": {"avail_change": [
+        _avail_change(1, "AVL_TRAIN", "AVL_TRAIN", 0.0),
+        _avail_change(3, "AVL_TRAIN", "AVL_EVAL", 150.0),
+        _avail_change(3, "AVL_EVAL", "UN_AVL", 209.25),
+    ]}}
+    sel = [_sel(1, 0.0), _sel(2, 130.0)]
+    res = trainer_trace_fidelity_parity(trainers, sel, "sim", gt)
+    assert res["ok"], res
+    assert res["mean_err"] == 0.0
+    assert res["n_spurious_transitions"] == 0

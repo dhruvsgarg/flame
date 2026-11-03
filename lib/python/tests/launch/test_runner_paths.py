@@ -73,7 +73,7 @@ class TestTrainingDelayFan:
 class TestAvailabilityTraceFan:
     """exp.trainer.availability.mode must fan into both hyperparameters.
     client_notify.trace (trainer, _build_trainer_baseline_overrides) and
-    hyperparameters.trackTrainerAvail.trace (aggregator, _build_aggregator_
+    hyperparameters.availability_trace (aggregator, _build_aggregator_
     config) -- otherwise a baseline's own hardcoded trace silently wins over
     the experiment's intended mode."""
 
@@ -114,21 +114,21 @@ class TestAvailabilityTraceFan:
         # enabled survives -- the fan only overrides .trace, not sibling keys.
         assert hp["client_notify"]["enabled"] == "True"
 
-    def test_aggregator_track_trainer_avail_trace_matches_mode(self, fake_example_dir):
+    def test_aggregator_availability_trace_matches_mode(self, fake_example_dir):
         hp = self._agg_hp(fake_example_dir, mode="mobiperf_2st")
-        assert hp["trackTrainerAvail"]["trace"] == "mobiperf_2st"
+        assert hp["availability_trace"] == "mobiperf_2st"
+        assert "trackTrainerAvail" not in hp  # FX-D94
 
     def test_aggregator_fan_wins_over_baseline_default(self, fake_example_dir):
         baseline_entry = {
             "aggregator": {
                 "hyperparameters": {
-                    "trackTrainerAvail": {"enabled": "True", "trace": "mobiperf_3st_50"}
+                    "availability_trace": "mobiperf_3st_50"
                 }
             }
         }
         hp = self._agg_hp(fake_example_dir, mode="syn_0", baseline_entry=baseline_entry)
-        assert hp["trackTrainerAvail"]["trace"] == "syn_0"
-        assert hp["trackTrainerAvail"]["enabled"] == "True"
+        assert hp["availability_trace"] == "syn_0"
 
 
 class TestPathResolution:

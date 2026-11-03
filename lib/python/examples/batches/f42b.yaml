@@ -1,0 +1,14 @@
+# F42b (screen, 12 h vclock): Felix new vs old on time to accuracy with pacing live (probe gate fixed), the ladder middle
+# (l3b: no C4/C5, l4: no C5) to attribute new's gain, seed 2 for the contenders (ctl, l5p), and the sync check-in baselines
+# (REFL, FedDance, FedAvg; F42-T10 fixed). Speech skips FedDance (as F42S01). 50 legs, ~2.5 h on both nodes.
+name: f42b
+common: "--lease-from-telemetry --gpu-cpus-per-trainer 0.1 --scale-smoke 43200 --gate"
+stages:
+  - {id: C0, args: "--tier F42 --datasets cifar10 --baselines felix,fedbuff,refl,feddance,fedavg --phases 'F42_s0u_ctl F42_s0u_l3b F42_s0u_l4 F42_s0u_l5 F42_s0u_l5p F42_s0u_rstar F42_s0u_fdstar'"}
+  - {id: C0R, args: "--tier F42 --seeds 2 --datasets cifar10 --baselines felix --phases 'F42_s0u_ctl_r2 F42_s0u_l5p_r2'"}
+  - {id: C1, args: "--tier F42 --datasets cifar10 --baselines felix,fedbuff,refl,feddance,fedavg --phases 'F42_s50u_ctl F42_s50u_l3b F42_s50u_l4 F42_s50u_l5 F42_s50u_l5p F42_s50u_fck F42_s50u_rstar F42_s50u_fdstar F42_s50u_fbstar'"}
+  - {id: C1R, args: "--tier F42 --seeds 2 --datasets cifar10 --baselines felix --phases 'F42_s50u_ctl_r2 F42_s50u_l5p_r2'"}
+  - {id: S0, args: "--tier F42 --gpu-share 2 --datasets google_speech --baselines felix,fedbuff,refl --phases 'gs_F42_s0u_ctl gs_F42_s0u_l3b gs_F42_s0u_l4 gs_F42_s0u_l5 gs_F42_s0u_l5p gs_F42_s0u_rstar'"}
+  - {id: S0R, args: "--tier F42 --seeds 2 --gpu-share 2 --datasets google_speech --baselines felix --phases 'gs_F42_s0u_ctl_r2 gs_F42_s0u_l5p_r2'"}
+  - {id: S1, args: "--tier F42 --gpu-share 2 --datasets google_speech --baselines felix,fedbuff,refl --phases 'gs_F42_s50u_ctl gs_F42_s50u_l3b gs_F42_s50u_l4 gs_F42_s50u_l5 gs_F42_s50u_l5p gs_F42_s50u_fck gs_F42_s50u_rstar gs_F42_s50u_fbstar'"}
+  - {id: S1R, args: "--tier F42 --seeds 2 --gpu-share 2 --datasets google_speech --baselines felix --phases 'gs_F42_s50u_ctl_r2 gs_F42_s50u_l5p_r2'"}

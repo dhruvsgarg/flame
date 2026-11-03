@@ -9,7 +9,7 @@ reads time.time() - agg_start_time_ts, so without a re-anchor the join wait
 (real OS process spawn/connect — ~300s wall at n=300) is silently baked into
 every subsequent availability-trace read: real ends up reading the trace
 ~300s ahead of where sim/ground-truth says it should be (root-caused via
-feddance syn_50 A3 — see UNAVAILABILITY_DESIGN.md).
+feddance syn_50_3st A3 — see UNAVAILABILITY_DESIGN.md).
 
 `_mark_join_barrier_done` fixes this by re-anchoring agg_start_time_ts to
 "now" (real mode only) at the moment the join barrier resolves, whatever
@@ -49,7 +49,8 @@ def _make_agg(*, simulated: bool, min_trainers_to_start=None, n_joined=0):
         )
     )
     agg.agg_start_time_ts = time.time()
-    channel = types.SimpleNamespace(_ends={f"t{i}": None for i in range(n_joined)})
+    channel = types.SimpleNamespace(_ends={f"t{i}": None for i in range(n_joined)}, dumps=lambda m: m,
+                                    send_payload=lambda e, p: None)  # FX-N45 origin broadcast
     return agg, channel
 
 

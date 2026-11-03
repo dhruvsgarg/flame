@@ -1,0 +1,7 @@
+# F42 smoke (R19): one leg per stack / arm type of f42s01 at 15 min vclock, both datasets; then EV (EV22, EV23), config_audit,
+# predictor_audit (check-in churn: sync rejects <= ~1 per idle client per round, async <= ~2 per pick).
+name: f42smoke
+common: "--lease-from-telemetry --gpu-cpus-per-trainer 0.1 --scale-smoke 900"
+stages:
+  - {id: SS, args: "--tier F42 --gpu-share 2 --datasets google_speech --baselines felix,fedbuff,refl,fedavg --phases 'gs_F42_s0u_ctl gs_F42_s50u_ctl gs_F42_s50u_l5p gs_F42_s50u_rstar gs_F42_s50u_fck'"}
+  - {id: SC, args: "--tier F42 --datasets cifar10 --baselines felix,fedbuff,refl,feddance,fedavg --phases 'F42_s0u_ctl F42_s50u_ctl F42_s50u_l5p F42_s50u_rstar F42_s50u_fdstar F42_s50u_fbstar F42_s50u_fck'"}

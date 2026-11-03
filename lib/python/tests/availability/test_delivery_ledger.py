@@ -148,3 +148,15 @@ def test_commit_withheld_pops():
     assert h.commit_withheld("t1") == 200.0
     assert h.pending_withheld == {}
     assert h.commit_withheld("t1") is None  # idempotent: no double-count
+
+
+def test_compute_delivery_ts_charges_gate_release_in_sim_only():
+    """FX-D163: sim delivers a send-gated update at flip + profiled release; real and ungated updates are unchanged."""
+    from types import SimpleNamespace
+
+    h = _Harness({"t1": _DOWN}, now=130)
+    h.config = SimpleNamespace(hyperparameters=SimpleNamespace(sim_gate_release_s=0.25))
+    assert h.compute_delivery_ts("t1", sct=150) == 200.0
+    h.simulated = True
+    assert h.compute_delivery_ts("t1", sct=150) == 200.25
+    assert h.compute_delivery_ts("t1", sct=50) == 50.0

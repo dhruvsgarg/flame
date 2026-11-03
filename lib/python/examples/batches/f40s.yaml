@@ -1,0 +1,8 @@
+# F40S (FELIX FX-N124 G2): real-stack smoke of the 10-21 changes, both datasets, sims. syn_50_3st + usage stream (continuous
+# off-charger accrual) 24 h into the trace; ctl = felix, fedbuff, oort; new = felix + free fresh utility, clock eval gate, AIMD-K memory.
+# Read: EV verdicts, knob grep (PL7), selection_audit.py belief error vs age (G3), visible counts vs stream_schedule.
+name: f40s
+common: "--lease-from-telemetry --gpu-cpus-per-trainer 0.1"
+stages:
+  - {id: SC, args: "--tier F40S --datasets cifar10"}
+  - {id: SS, args: "--tier F40S --gpu-share 2 --datasets google_speech"}

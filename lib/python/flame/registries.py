@@ -15,13 +15,15 @@
 # SPDX-License-Identifier: Apache-2.0
 """Model registry provider."""
 
-from typing import Union
+from typing import TYPE_CHECKING, Union
 
 from flame.config import RegistryType
 from flame.object_factory import ObjectFactory
 from flame.registry.dummy import DummyRegistryClient
-from flame.registry.mlflow import MLflowRegistryClient
 from flame.registry.local import LocalRegistryClient
+
+if TYPE_CHECKING:
+    from flame.registry.mlflow import MLflowRegistryClient
 
 
 class RegistryProvider(ObjectFactory):
@@ -29,12 +31,19 @@ class RegistryProvider(ObjectFactory):
 
     def get(
         self, registry_name, **kwargs
-    ) -> Union[DummyRegistryClient, MLflowRegistryClient]:
+    ) -> Union[DummyRegistryClient, "MLflowRegistryClient"]:
         """Return a registry client for a given registry name."""
         return self.create(registry_name, **kwargs)
 
 
+def _mlflow_client(**kwargs) -> "MLflowRegistryClient":
+    """Lazy: importing mlflow (+pandas) costs ~80 MB host RAM per process, paid by every trainer (FX-N84)."""
+    from flame.registry.mlflow import MLflowRegistryClient
+
+    return MLflowRegistryClient(**kwargs)
+
+
 registry_provider = RegistryProvider()
 registry_provider.register(RegistryType.DUMMY, DummyRegistryClient)
-registry_provider.register(RegistryType.MLFLOW, MLflowRegistryClient)
+registry_provider.register(RegistryType.MLFLOW, _mlflow_client)
 registry_provider.register(RegistryType.LOCAL, LocalRegistryClient)

@@ -33,7 +33,7 @@ def load_selection_events(path):
 
 
 def analyze(path, label):
-    evs = load_selection_events(path)
+    evs = [e for e in load_selection_events(path) if e.get("per_trainer_full") is not False]  # FX-D240: pool snapshots
     # 1) per-trainer intrinsic speed = median of measured speed_s across rounds
     speed_samples = defaultdict(list)
     for ev in evs:

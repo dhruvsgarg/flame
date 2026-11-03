@@ -18,23 +18,26 @@ import gc
 import inspect
 import logging
 import math
+import os
 import time
 
-import cloudpickle
 from contextlib import contextmanager
 
 import torch
+from flame import harness
+from flame.availability.trace import DELIVERABLE_STATES, deliverable
 from flame.channel import VAL_CH_STATE_RECV, VAL_CH_STATE_SEND
 from flame.channel_manager import ChannelManager
-from flame.common.constants import DeviceType
 from flame.common.custom_abcmeta import ABCMeta, abstract_attribute
 from flame.common.util import (
     MLFramework,
     delta_weights_pytorch,
     delta_weights_tensorflow,
     get_ml_framework_in_use,
+    materialize_weights,
+    model_device,
+    pack_weights,
     valid_frameworks,
-    weights_to_device,
     weights_to_model_device,
 )
 from flame.config import Config, TrainerAvailState
@@ -47,7 +50,7 @@ from flame.optimizers import optimizer_provider
 from flame.privacies import privacy_provider
 from flame.registries import registry_provider
 from flame import telemetry
-from flame.telemetry.events import build_task_recv, build_task_send
+from flame.telemetry.events import EVENT_TASK_DISCARD, build_task_recv, build_task_send
 
 # TODO: (DG) torch is needed for asyncoort in oort_loss() function,
 # but need to comment / uncomment based on the backend used. If it is
@@ -132,6 +135,7 @@ class Trainer(Role, metaclass=ABCMeta):
         # for tracking trainer round progress and checking before
         # sending updates
         self._updates_returned_upto_round = 0
+        self._responded_version: dict = {}  # task -> last model version answered (FX-D9)
         self._trainer_online_channel_status = True
 
         self.task_to_perform = "train"
@@ -178,6 +182,15 @@ class Trainer(Role, metaclass=ABCMeta):
         if tag == TAG_FETCH:
             self._fetch_weights(tag)
 
+    def _aggregator_left(self, channel) -> bool:
+        """FX-N77: the aggregator left after an EOT this trainer hadn't read (it was training); finish on it."""
+        eot = getattr(channel, "departed_eot", None)
+        if eot is None or channel.all_ends():
+            return False
+        self._work_done = eot
+        self.fetch_success = True
+        return True
+
     def _fetch_weights(self, tag: str) -> None:
         logger.debug(
             f"### FETCH WEIGHTS start for tag: {tag}, "
@@ -206,6 +219,8 @@ class Trainer(Role, metaclass=ABCMeta):
             f"for trainer_id {self.trainer_id}"
         )
         channel.await_join()
+        if self._aggregator_left(channel):
+            return
 
         # one aggregator is sufficient
         end = channel.one_end(VAL_CH_STATE_RECV)
@@ -233,57 +248,69 @@ class Trainer(Role, metaclass=ABCMeta):
 
         logger.debug(f"New message received for trainer_id {self.trainer_id}")
 
+        # FX-N45: the join-barrier trace origin carries no task.
+        if MessageType.AGG_START_TS in msg and MessageType.WEIGHTS not in msg and MessageType.ROUND not in msg:
+            self._agg_start_origin = msg[MessageType.AGG_START_TS]
+            if hasattr(self, "_refresh_avl_state"):
+                self._refresh_avl_state()
+            channel._selector.ordered_updates_recv_ends.append(end)
+            channel.cleanup_recvd_ends()
+            return
+        if MessageType.CHECKIN_RECONNECT in msg:  # F42-T1: a rejected check-in; no task
+            _ck = getattr(self, "_checkin_client", None)
+            if _ck is not None:
+                _ck.on_reconnect(msg[MessageType.CHECKIN_RECONNECT]["at"], msg[MessageType.CHECKIN_RECONNECT].get("mu"))
+            channel._selector.ordered_updates_recv_ends.append(end)
+            channel.cleanup_recvd_ends()
+            return
+
+        # FX-D9: drop an answered request (version <= answered; a train answer covers eval), before any state change.
+        _req_task = msg.get(MessageType.TASK_TO_PERFORM, self.task_to_perform)
+        _req_ver = msg.get(MessageType.ROUND)
+        _resp = getattr(self, "_responded_version", {})
+        _covering = [_resp.get(t) for t in (("train", "eval") if _req_task == "eval" else (_req_task,))]
+        _answered = max((v for v in _covering if v is not None), default=None)
+        if (MessageType.EOT not in msg and _req_ver is not None and _answered is not None
+                and _req_ver <= _answered):
+            logger.info(
+                f"[TRAINER_TASK_DISCARD] trainer_id={self.trainer_id} task={_req_task} "
+                f"model_version={_req_ver} already answered up to {_answered}"
+            )
+            if telemetry.is_enabled():
+                telemetry.emit(EVENT_TASK_DISCARD, round=int(_req_ver), trainer_id=str(self.trainer_id),
+                               task_to_perform=_req_task, answered_upto=int(_answered))
+            channel._selector.ordered_updates_recv_ends.append(end)
+            channel.cleanup_recvd_ends()
+            return
+
         if MessageType.ROUND in msg:
             prev_round = self._round
             self._round = msg[MessageType.ROUND]
             logger.debug(f"[TRAINER_FETCH] Updated round from {prev_round} to {self._round} for trainer_id {self.trainer_id}")
 
-        if MessageType.WEIGHTS in msg:
-            # Before proceeding, check if this model version is newer
-            # than previously processed NOTE: The condition could have
-            # been round <= updates_retuned. But there are scenarios
-            # where the channel.leave() executes before the aggregator
-            # processes the weight update. Hence, with <= condition,
-            # the trainer would never make progress. We allow to
-            # trainer to re-train for == round condition if the
-            # message was dropped.
-            if self._round <= self._updates_returned_upto_round:
-                logger.info(
-                    f"[TRAINER_FETCH_ABORT] Fetch weights aborted for given model version "
-                    f"{self._round} while trainer_id {self.trainer_id} has "
-                    f"already sent updates "
-                    f"upto round: {self._updates_returned_upto_round}"
-                )
-
-                # Received old data but still allow aggregator cleanup
-                # state to occur so as to receive the next update
-                logger.debug(
-                    f"Cleaning up recvd ends for trainer_id {self.trainer_id}"
-                    f" to allow fetch from aggregator "
-                    "again and returning from function"
-                )
-                channel._selector.ordered_updates_recv_ends.append(end)
-                logger.debug(
-                    f"After appending {end} to ordered_updates_recv_ends: "
-                    f"{channel._selector.ordered_updates_recv_ends}"
-                )
-                channel.cleanup_recvd_ends()
-                return
-
+        if (MessageType.WEIGHTS in msg or MessageType.WEIGHTS_BYTES in msg) and getattr(self, "_checkin_client", None):
+            self._checkin_client.on_task_start()  # F42-T1
+        if MessageType.WEIGHTS in msg or MessageType.WEIGHTS_BYTES in msg:
             # Load the model onto GPU if self.model is None:
             # self._load_model_onto_gpu()
 
             # Update the model
             with self._phase("weights_to_ram_s"):
-                self.weights = weights_to_model_device(msg[MessageType.WEIGHTS], self.model)
+                self.weights = weights_to_model_device(materialize_weights(msg, model_device(self.model)), self.model)
             with self._phase("weights_to_gpu_s"):
                 self._update_model()
-                if torch.cuda.is_available():
+                # FX-D15: sync only a CUDA model; never time driver init here
+                if self._model_on_cuda():
                     torch.cuda.synchronize()
 
         # Capture virtual send-time stamped by aggregator (sim mode); used for sim_completion_ts.
-        if MessageType.SIM_SEND_TS in msg:
+        if MessageType.SIM_SEND_TS in msg and not (
+            harness.injected("freeze_trainer_clock") and getattr(self, "_sim_send_ts", None) is not None
+        ):
             self._sim_send_ts = msg[MessageType.SIM_SEND_TS]
+        self._sim_wall_send_ts = msg.get(MessageType.SIM_WALL_SEND_TS)  # FX-D108
+        _fan = msg.get(MessageType.SIM_FANOUT) or ()
+        self._sim_fanout_rank = _fan.index(str(self.trainer_id)) if str(self.trainer_id) in _fan else None  # FX-D191
         _mqtt_vclock_end = getattr(self, "vclock_now", None)
         self._phase_vclock_s["mqtt_fetch_s"] = (
             _mqtt_vclock_end - _mqtt_vclock_start
@@ -359,6 +386,8 @@ class Trainer(Role, metaclass=ABCMeta):
         )
         if tag == TAG_UPLOAD:
             self._send_weights(tag)
+            if getattr(self, "_checkin_client", None) is not None:
+                self._checkin_client.on_task_end()  # F42-T1: may check in again
 
     def _send_weights(self, tag: str) -> None:
         logger.debug(
@@ -382,17 +411,27 @@ class Trainer(Role, metaclass=ABCMeta):
             if not getattr(self, "simulated", False) and hasattr(self, "_sim_now")
             else None
         )
+        # FX-D55: gate on the trace at send time, not the 1 s poller's cached state.
+        _refresh = (getattr(self, "_refresh_avl_state", None)
+                    if os.environ.get("FLAME_SEND_GATE_REFRESH", "1") != "0" else None)
+        if _refresh and not getattr(self, "simulated", False):
+            _refresh()
+        # FX-N97: a train result is deliverable only in AVL_TRAIN, an eval result in AVL_EVAL or AVL_TRAIN.
+        _task = self.task_to_perform if self.task_to_perform in DELIVERABLE_STATES else "train"
         if (
             not getattr(self, "simulated", False)
-            and self.avl_state == TrainerAvailState.UN_AVL
+            and not deliverable(self.avl_state, _task)
         ):
-            if self.wait_until_next_avl == "True":
+            # bool-coerced config flag (T13, FX-D5)
+            if str(self.wait_until_next_avl).strip().lower() == "true":
                 logger.warning(
                     f"Trainer id {self.trainer_id} is unavailable to send weights. Waiting for it to be available again"
                 )
                 with self._phase("send_gate_wait_s"):
-                    while self.avl_state == TrainerAvailState.UN_AVL:
-                        time.sleep(1)
+                    while not deliverable(self.avl_state, _task):
+                        time.sleep(0.1 if _refresh else 1)
+                        if _refresh:
+                            _refresh()
             else:
                 logger.warning(
                     f"Trainer id {self.trainer_id} is unavailable to send weights since wait_until_next_avl = {self.wait_until_next_avl}. Exiting sending weights."
@@ -410,6 +449,8 @@ class Trainer(Role, metaclass=ABCMeta):
             f"for trainer_id: {self.trainer_id}"
         )
         channel.await_join()
+        if self._aggregator_left(channel):
+            return
 
         # one aggregator is sufficient
         end = channel.one_end(VAL_CH_STATE_SEND)
@@ -444,26 +485,33 @@ class Trainer(Role, metaclass=ABCMeta):
                 self.finalize_local_accuracy()
 
                 msg = {
-                    MessageType.WEIGHTS: weights_to_device(delta_weights, DeviceType.CPU),
+                    MessageType.WEIGHTS_BYTES: pack_weights(delta_weights),  # FX-N77: one D2H, no tensor pickling
                     MessageType.DATASET_SIZE: self.dataset_size,
                     MessageType.MODEL_VERSION: self._round,
                     MessageType.DATASAMPLER_METADATA: self.datasampler.get_metadata(),
                     MessageType.STAT_UTILITY: self._stat_utility,
                     MessageType.LOCAL_ACCURACY: self._local_accuracy,
+                    MessageType.TRAIN_LOSS_MEAN: getattr(self, "_train_loss_mean", None),
                 }
         elif self.task_to_perform == "train":
             msg = {
                 MessageType.MODEL_VERSION: self._round,
                 MessageType.DATASET_SIZE: self.dataset_size,
                 MessageType.STAT_UTILITY: self._stat_utility,
-                MessageType.LOCAL_ACCURACY: self._local_accuracy
+                MessageType.LOCAL_ACCURACY: self._local_accuracy,
+                MessageType.TRAIN_LOSS_MEAN: getattr(self, "_train_loss_mean", None),
             }
         else:
             msg = {
                 MessageType.MODEL_VERSION: self._round,
                 MessageType.STAT_UTILITY: self._stat_utility,
                 MessageType.LOCAL_ACCURACY: self._local_accuracy,
+                MessageType.TRAIN_LOSS_MEAN: getattr(self, "_train_loss_mean", None),
             }
+            if getattr(self, "_val_probe", None) is not None:
+                msg[MessageType.VAL_PROBE] = self._val_probe
+        if self.task_to_perform == "train" and getattr(self, "_val_train_report", None) is not None:  # FX-N127 V2 (a)
+            msg[MessageType.VAL_PROBE] = self._val_train_report
 
         # simulated-time mode only: report the modeled completion time/duration
         # so the aggregator orders this update by a virtual clock. No-op in real
@@ -473,15 +521,6 @@ class Trainer(Role, metaclass=ABCMeta):
             msg[MessageType.SIM_COMPLETION_TS] = _sim_completion
             msg[MessageType.SIM_CLIENT_TASK_TRAIN_DURATION_S] = getattr(
                 self, "_sim_round_duration", 0.0
-            )
-
-        # Lazy-deserialize (real and sim): ship the weight update as raw pre-serialized bytes so
-        # the aggregator reconstructs the tensor only for updates it commits, not the surplus/
-        # stale ones it discards (the channel otherwise cloudpickle.loads every received tensor).
-        # The aggregator restores it via common.util.materialize_weights at its read site.
-        if MessageType.WEIGHTS in msg:
-            msg[MessageType.WEIGHTS_BYTES] = cloudpickle.dumps(
-                msg.pop(MessageType.WEIGHTS)
             )
 
         # MODELED_DELAY_S (mirrors fwdllm_trainer.py); None when delays are
@@ -499,6 +538,10 @@ class Trainer(Role, metaclass=ABCMeta):
         if _compute_s is not None:
             msg[MessageType.CLIENT_TASK_TRAIN_COMPUTE_S] = float(_compute_s)
 
+        _intr = getattr(self, "_client_task_train_intrinsic_s", None)
+        if _intr is not None:
+            msg[MessageType.CLIENT_TASK_TRAIN_INTRINSIC_S] = float(_intr)
+
         # Trainer recv timestamp: when channel.recv() returned the distributed
         # weights. Used by the aggregator for the agg→trainer delivery leg (i).
         _wrt = getattr(self, "_wall_recv_ts", None)
@@ -514,6 +557,7 @@ class Trainer(Role, metaclass=ABCMeta):
         # Stamp wall-clock send time so aggregator can decompose wall_lag_s.
         _wall_send_ts = time.time()
         msg[MessageType.WALL_SEND_TS] = _wall_send_ts
+        msg[MessageType.SEND_GATE_WAIT_S] = float(self._phase_times.get("send_gate_wait_s", 0.0))
 
         with self._phase("mqtt_send_s"):
             channel.send(end, msg)
@@ -539,6 +583,9 @@ class Trainer(Role, metaclass=ABCMeta):
             )
             telemetry.emit(ev, **fields)
 
+        if not hasattr(self, "_responded_version"):
+            self._responded_version = {}
+        self._responded_version[self.task_to_perform] = self._round
         if self.task_to_perform == "train":
             # To allow the trainer to participate in eval AND train in
             # the same round, we set _updates_returned_upto_round only
@@ -583,6 +630,8 @@ class Trainer(Role, metaclass=ABCMeta):
             f"{channel} for trainer_id: {self.trainer_id}"
         )
         channel.await_join()
+        if self._aggregator_left(channel):
+            return
 
         # Setting the channel status to False. Means that trainer
         # should not send updates during this time.
@@ -612,6 +661,8 @@ class Trainer(Role, metaclass=ABCMeta):
             f"{channel} for trainer_id: {self.trainer_id}"
         )
         channel.await_join()
+        if self._aggregator_left(channel):
+            return
 
         channel.join()
 
@@ -648,6 +699,8 @@ class Trainer(Role, metaclass=ABCMeta):
             f"{channel} for trainer_id: {self.trainer_id}"
         )
         channel.await_join()
+        if self._aggregator_left(channel):
+            return
 
         channel.update_trainer_state(state, timestamp)
         logger.info(
@@ -670,6 +723,10 @@ class Trainer(Role, metaclass=ABCMeta):
     def update_metrics(self, metrics: dict[str, float]):
         """Update metrics."""
         self.metrics = self.metrics | metrics
+
+    def _model_on_cuda(self) -> bool:
+        d = model_device(self.model)
+        return d is not None and d.type == "cuda"
 
     def _update_model(self):
         if self.framework == MLFramework.PYTORCH:
@@ -713,6 +770,7 @@ class Trainer(Role, metaclass=ABCMeta):
         self._local_accuracy = 0.0
         self._local_accuracy_correct = 0
         self._local_accuracy_total = 0
+        self._train_loss_sum, self._train_loss_batches, self._train_loss_mean = 0.0, 0, None
 
         if "reduction" not in inspect.signature(self.loss_fn).parameters:
             msg = "Parameter 'reduction' not found in loss function "
@@ -735,6 +793,11 @@ class Trainer(Role, metaclass=ABCMeta):
             )
             self._local_accuracy_total += int(target.numel())
 
+    def update_train_loss(self, loss: "torch.Tensor") -> None:
+        """Accumulate one mini-batch's mean loss on-device (FedDance I_m, Eq. 6); synced once in finalize."""
+        self._train_loss_sum = self._train_loss_sum + loss.detach()
+        self._train_loss_batches += 1
+
     def finalize_local_accuracy(self) -> None:
         correct = self._local_accuracy_correct
         if torch.is_tensor(correct):
@@ -743,11 +806,15 @@ class Trainer(Role, metaclass=ABCMeta):
             self._local_accuracy = correct / self._local_accuracy_total
         else:
             self._local_accuracy = 0.0
+        loss_sum, n = getattr(self, "_train_loss_sum", 0.0), getattr(self, "_train_loss_batches", 0)
+        loss_sum = float(loss_sum.item()) if torch.is_tensor(loss_sum) else float(loss_sum)
+        self._train_loss_mean = loss_sum / n if n else None
 
     def reset_local_accuracy(self) -> None:
         self._local_accuracy = 0.0
         self._local_accuracy_correct = 0
         self._local_accuracy_total = 0
+        self._train_loss_sum, self._train_loss_batches, self._train_loss_mean = 0.0, 0, None
 
     # TODO: Enable this in trainer code using a flag based on selector
     # used. Needs to also pass to trainer/main.py
@@ -763,6 +830,18 @@ class Trainer(Role, metaclass=ABCMeta):
         Measure the loss of a trainer during training. The trainer's
         statistical utility is measured at epoch 1.
         """
+        if epoch == 1 and self._fedscale_utility():  # every batch of the first pass, EMA of mean loss^2
+            reduction = kwargs.pop("reduction", "mean")
+            loss_list = self.loss_fn(reduction="none", **kwargs)(output, target)
+            sq = torch.square(loss_list.detach()).mean()
+            ema = getattr(self, "_util_ema", None)
+            self._util_ema = sq if ema is None else 0.8 * ema + 0.2 * sq
+            self._util_samples = getattr(self, "_util_samples", 0) + int(target.numel())
+            n0 = getattr(self, "_util_prefix_n", 0)
+            if n0 < self._utility_prefix_samples():  # FX-N119: pre-adaptation loss, sample-weighted
+                self._util_prefix_sq = getattr(self, "_util_prefix_sq", 0.0) + float(sq) * int(target.numel())
+                self._util_prefix_n = n0 + int(target.numel())
+            return loss_list.mean() if reduction == "mean" else loss_list.sum()
         if epoch == 1 and batch_idx == 0:
             if "reduction" in kwargs.keys():
                 reduction = kwargs["reduction"]
@@ -791,6 +870,14 @@ class Trainer(Role, metaclass=ABCMeta):
         Normalize statistical utility of a trainer based on the size
         of the trainer's datset, at epoch 1.
         """
+        if epoch == 1 and self._fedscale_utility():
+            ema = getattr(self, "_util_ema", None)
+            if ema is not None:
+                trained = min(len(self.train_loader.dataset), self._util_samples)
+                pn = getattr(self, "_util_prefix_n", 0)
+                msq = self._util_prefix_sq / pn if pn else float(ema.item())
+                self._stat_utility = math.sqrt(msq) * trained
+            return
         if epoch == 1:
             self._stat_utility = len(self.train_loader.dataset) * math.sqrt(
                 self._stat_utility / len(self.train_loader.dataset)
@@ -798,9 +885,21 @@ class Trainer(Role, metaclass=ABCMeta):
         else:
             return
 
+    def _fedscale_utility(self) -> bool:
+        hp = getattr(getattr(self, "config", None), "hyperparameters", None)
+        return getattr(hp, "stat_utility", "legacy") == "fedscale"
+
+    def _utility_prefix_samples(self) -> int:
+        """-1 = one training batch: the pass's only pre-step loss, sized by the shared batch setting (FX-N132 f)."""
+        hp = getattr(getattr(self, "config", None), "hyperparameters", None)
+        n = int(getattr(hp, "utility_prefix_samples", 0) or 0)
+        return int(getattr(self, "batch_size", 0) or getattr(hp, "batch_size", 0) or 0) if n < 0 else n
+
     def reset_stat_utility(self) -> None:
         """Reset the trainer's statistical utility to zero."""
         self._stat_utility = 0
+        self._util_ema, self._util_samples = None, 0
+        self._util_prefix_sq, self._util_prefix_n = 0.0, 0
 
     def compose(self) -> None:
         """Compose role with tasklets."""

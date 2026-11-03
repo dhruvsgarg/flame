@@ -6,8 +6,8 @@
 has no vclock/sim dependency -- it reads `_avail_now()` (mode-dispatching
 already) and the selector's own `selected_ends`, both equally valid in real
 mode. It used to be called only inside `if self.simulated:` alongside
-`_sim_abandon_stalled` (which genuinely IS sim-only: real mode has its own
-native wall-clock abandon in the selector, `SEND_TIMEOUT_WAIT_S`). That left
+`_abandon_stalled` (sim-only on the async stack, whose selector has its own
+wall-clock abandon, `SEND_TIMEOUT_WAIT_S`). That left
 real-mode felix runs with no way to drop a stalled UN_AVL trainer out of
 `selected_ends` (and therefore out of `channel.ends(VAL_CH_STATE_RECV)`,
 since `async_oort`'s selector derives recv-state ends directly from
@@ -66,7 +66,7 @@ def _stub_common(agg, channel, *, simulated, evict_spy, abandon_spy):
     agg._inject_oracle_utilities = lambda ch, task: None
     agg._avail_stamp_end_states = lambda ch: None
     agg._avail_now = lambda: 0.0
-    agg._sim_abandon_stalled = abandon_spy
+    agg._abandon_stalled = abandon_spy
     agg._sim_evict_unavail_inflight = evict_spy
     agg.datasampler = types.SimpleNamespace(get_metadata=lambda r, e: {})
     agg.weights = {}
@@ -186,7 +186,7 @@ def _make_asyncfl_agg(channel, *, simulated, evict_spy, abandon_spy):
 
 
 class TestProactiveEvictBothModes:
-    """D.1 eviction runs regardless of mode; the sim-only 90s re-clock doesn't."""
+    """D.1 eviction and the C.3 90s abandon both run in either mode on the sync stacks."""
 
     def test_syncfl_real_mode_still_evicts(self):
         ch = _DistChannel(["e1", "e2"])
@@ -194,7 +194,7 @@ class TestProactiveEvictBothModes:
         agg = _make_syncfl_agg(ch, simulated=False, evict_spy=evict_spy, abandon_spy=abandon_spy)
         agg._distribute_weights("tag", "train")
         assert calls["evict"] == 1
-        assert calls["abandon"] == 0
+        assert calls["abandon"] == 1  # real sync selectors have no native abandon
 
     def test_syncfl_sim_mode_evicts_and_abandons(self):
         from flame.sim import VirtualClock
@@ -213,7 +213,7 @@ class TestProactiveEvictBothModes:
         agg = _make_oort_agg(ch, simulated=False, evict_spy=evict_spy, abandon_spy=abandon_spy)
         agg._distribute_weights("tag", "train")
         assert calls["evict"] == 1
-        assert calls["abandon"] == 0
+        assert calls["abandon"] == 1  # real sync selectors have no native abandon
 
     def test_oort_sim_mode_evicts_and_abandons(self):
         from flame.sim import VirtualClock
@@ -232,7 +232,7 @@ class TestProactiveEvictBothModes:
         agg = _make_asyncfl_agg(ch, simulated=False, evict_spy=evict_spy, abandon_spy=abandon_spy)
         agg._distribute_weights("tag", "train")
         assert calls["evict"] == 1
-        assert calls["abandon"] == 0
+        assert calls["abandon"] == 0  # async selector abandons natively (SEND_TIMEOUT_WAIT_S)
 
     def test_asyncfl_sim_mode_evicts_and_abandons(self):
         ch = _DistChannel(["e1", "e2"])
@@ -241,3 +241,42 @@ class TestProactiveEvictBothModes:
         agg._distribute_weights("tag", "train")
         assert calls["evict"] == 1
         assert calls["abandon"] == 1
+
+
+class TestOortResidenceStarvationWakeup:
+    """FX-D6: at syn_0, residence-held (still computing) trainers are the only wake-up;
+    the starvation branch must advance to the earliest held sct, not stop the run."""
+
+    def _agg(self, residence):
+        from sortedcontainers import SortedDict
+        from flame.sim import SimReorderBuffer, VirtualClock
+
+        ch = _DistChannel(["e1", "e2"])
+        calls, evict_spy, abandon_spy = _spies()
+        agg = _make_oort_agg(ch, simulated=True, evict_spy=evict_spy, abandon_spy=abandon_spy)
+        agg.config.selector.kwargs["aggr_num"] = 2  # desired 2 > eligible 1
+        agg.config.hyperparameters.inflight_residence = residence
+        agg.config.hyperparameters.max_experiment_runtime_s = 300
+        agg._vclock = VirtualClock()
+        agg._vclock.advance(10.0)
+        agg._avail_now = lambda: agg._vclock.now
+        agg.trainer_event_dict = {e: SortedDict({0.0: "AVL_TRAIN"}) for e in ("e1", "e2")}
+        agg._trace_has_avl_eval = False
+        agg.pending_withheld = {}
+        agg._work_done = False
+        agg._sim_buffer = SimReorderBuffer()
+        agg._sim_buffer.add("e1", 50.0)  # still computing at vclock 10
+        return agg
+
+    def test_advances_to_held_sct(self):
+        agg = self._agg(residence=True)
+        agg._distribute_weights("tag", "train")
+        assert agg._vclock.now == 50.0 and agg._work_done is False
+
+    def test_residence_off_keeps_legacy_stop(self):
+        from sortedcontainers import SortedDict
+
+        agg = self._agg(residence=False)
+        agg.trainer_event_dict["e2"] = SortedDict({0.0: "UN_AVL"})  # starve, never recovers
+        agg._distribute_weights("tag", "train")
+        assert agg._vclock.now == 10.0 and agg._work_done is True

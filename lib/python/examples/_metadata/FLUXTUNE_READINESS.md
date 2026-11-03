@@ -1,0 +1,206 @@
+# FluxTune readiness — forward-gradient fine-tuning (fwdllm)
+
+## Preamble
+- **Read [ROBUST_FL_READINESS.md](ROBUST_FL_READINESS.md) first.** Its doc rules, operating rules (R1-R13),
+  shared lessons (L) and tripwires (T) apply here. This doc holds only what is specific to FluxTune:
+  gradients (JVPs) aggregated instead of weights, a variance-gated commit, and the `data_id` progress axis.
+- **PARKED until Felix readiness is stable across unavailability (syn_20_3st/syn_50_3st, mobiperf_3st) on both async_cifar10
+  and google_speech (FELIX_READINESS FX-N9, FX-N11)** and the shared changes it drives have settled. Until then
+  nothing here is worked except (a) keeping this track green under shared changes (R10) and (b) the parent
+  S-steps that cover fwdllm.
+- **Scope:** nine baselines on AG News / DistilBERT, n=100, α=1, `jvp_eval_mode` ON: `fluxtune`, `fwdllm`,
+  `fwdllm_it_unaware`, `fwdllm_it_oracular`, `fedbuff_round`, `fedbuff_it_unaware`, `fedbuff_it_oracular`,
+  `felix_round`, `felix_it`.
+- **Paper evaluation:** follow PAPER_TEMPLATE Part E "Evaluation plan and run pipeline" as Felix did (outline Tables 2 → 1,
+  manifest + digests + status, first version before seeds, `/coc/scratch/dgarg/mlsys27_fluxtune_runs_<date>/`); reuse Felix's
+  scripts (`paper_runs.py`, `leg_digest.py`, `paper_plots.py`).
+- **IDs:** `FT-N` next steps · `FT-L` lessons · `FT-T` tripwires · `FT-D` done.
+- **Reference (read only for detail):** parity board, runbook, full lesson and dead-end list →
+  [simulate_fwdllm.md](../fwdllm/simulate_fwdllm.md) (§A, §B.1, §D, §E, §F) · design, charge registry →
+  [FWDLLM_DESIGN.md](../fwdllm/FWDLLM_DESIGN.md) · training stability →
+  [fluxtune_contributions.md](../fwdllm/fluxtune_contributions.md) §8 · experiments →
+  [EXPERIMENTS.md](../paper_expts_fluxtune/EXPERIMENTS.md) (live paper plan) · identity → [BASELINES.md](BASELINES.md).
+
+---
+
+## Status grid
+
+✅ done · ⚠ open · ⬚ not started. Parity = `run_parity.py`, two-sided floors, median over real legs.
+
+| baseline | real (n≥2) | sim syn_0 (pass/fail/skip) | sim + unavailability |
+|---|---|---|---|
+| fluxtune v1 | ✅ | ✅ 74/0/19 | ⬚ |
+| fluxtune v2 (now the default) | ⚠ collapses at the round-2 boundary (I-1) | ⚠ charge profile predates v2 | ⬚ |
+| fwdllm | ✅ | ✅ 68/0/24 | ⬚ |
+| fwdllm_it_unaware / _oracular | ✅ | ✅ 69/0/23 each | ⬚ |
+| fedbuff_round | ✅ | ✅ 63/0/30 | ⬚ |
+| fedbuff_it_unaware / _oracular | ✅ | ✅ 63/0/29, 62/0/29 (`utility` SKIP) | ⬚ |
+| felix_round | ✅ | ✅ 62/0/30 | ⬚ |
+| felix_it | ✅ | ✅ 66/0/27 | ⬚ |
+
+syn_0 parity is closed on v1. Unavailability: `fwdllm_aggregator.py` has no send-gate, deliver-late or
+withheld-delivery wiring yet (only the oracular select filter and the sync scarcity wait).
+
+**Latest (10-27; bench, syn_0, seed 1, n = 1; `~/aish_test/.../fwdllm/paper_dy_20261027/POOL_full_{flux,fwdllm}`).** FluxTune
+hit the 65% target (`BudgetStop` 2 evals ≥ 0.65 at commit 557; best 66.2%, 4.78 h vclock, 148 min wall). FwdLLM stalled at 58-60%
+(best 61.6% at 22.9 h; stopped at 47.8 h). At FwdLLM's best (first eval ≥ 61.6%): FluxTune 3.29 h vs 22.9 h = **6.95× sooner**, 27.4
+vs 263.1 GB = **−90% traffic** (down 17.2 vs 24.4 GB, −29%; up 10.2 vs 238.7 GB, −96%); final accuracy +4.6 pp (66.2 vs 61.6%).
+Uplink is summed from trainer telemetry by wall timestamp. Unchecked: whether FwdLLM's stall is the method or this config.
+
+---
+
+## Next steps (persistent queue — resumes after Felix)
+
+- **FT-N21 · Slot accounting in the fwdllm digest (from Felix, 10-29) · todo (on resume).** Felix's parser charged two things to
+  "lost" slot time that were not: (1) with notify, a client that finished and went offline kept its slot until the next sim event,
+  though the send gate frees it at completion (FX-N167; fixed in `leg_digest.py`); (2) `slot_split` counted the `late` fate
+  (an update aggregated *after* an eviction / timeout record, e.g. a withheld upload delivered on return) as discarded compute
+  (fixed in `paper_plots.USED`). After both, Felix computes 98.9-100% of its occupied slot time on every trace (was shown losing up
+  to 10%). *Check:* the fwdllm digest frees slots at completion under the send gate and counts late-but-aggregated gradients as used.
+  *Exit:* a fwdllm leg's slot split sums to capacity with no late-aggregated update in "discarded".
+- **FT-N20 · Data augmentation like every Felix stack (FELIX FX-D233, FX-N143, Decisions "Augmentation") · todo (on resume).**
+  *Principle (operator 10-24):* if the baselines' own pipelines augment, every stack and the ceiling do, with fresh draws per pass on
+  the device; never adopted or skipped for convenience. Felix found its GPU preload froze one draw per sample (+10-17 pp once fixed).
+  *Verify:* (1) what fwdllm's / FwdLLM's and FedScale's AG News loaders do (text usually has no standard augmentation: then record
+  "none, as the baselines", not a new trick); (2) whether pre-tokenized / cached samples freeze any random step (masking, truncation
+  offset). *Add* only what the baselines' code does, to FluxTune and every fwdllm baseline alike, plus the defense (what, standard,
+  on-device cost, why it helps, no privacy claim, targets re-derived). *Exit:* noted in the setup text; one smoke per baseline.
+- **FT-N19 · One bench queue for Felix and FluxTune · todo (after FT-N18; operator 10-23).** *Why:* both projects share jayne /
+  shepherd; one `bench_pool.py` queue that takes cifar / speech (Felix) and fwdllm (FluxTune) legs together runs them interleaved
+  without hand-split GPU lists or one batch waiting on the other. `bench_pool.py` already places each leg by free GPU memory + host
+  RAM (FELIX FX-N141 Built); left: fwdllm legs on the bench (FT-N18), a per-leg resource class (fwdllm DistilBERT legs need more GPU
+  memory than cifar's ~3.4 GB: set `--leg-gpu-gb` per job from a profile, not one flag), a jobs file mixing tiers from both
+  harnesses, and per-project output pools. *Exit:* one mixed batch (Felix screen + fwdllm screen) on both nodes, every leg ok,
+  no OOM, legs / h ≥ the two batches run back to back.
+
+- **FT-N18 · fwdllm on the in-process bench (FELIX V5, FX-D213 / D218) · todo (on resume).** *Why:* Felix's harness legs bound on host
+  RAM (84-99 GB, one process per trainer), so a node ran 4-5 legs; the bench (aggregator + W worker processes, in-memory channel) runs
+  ~4 GB legs: cifar 121-141 legs / h on jayne vs ~15 on both nodes (8-9×). It pays only when per-trainer process cost binds; speech
+  sims are GPU-compute-bound and gained ~1×.
+  - *Step 0, decide (≤ 15 min):* profile one fwdllm harness sim leg at production n (`resource_report.py --util`: RAM, GPU memory, SM).
+    RAM / GPU memory bound (one DistilBERT copy per trainer) → port; SM-bound → stay on the harness, record why here.
+  - *Port:* `fwdllm_aggregator` (barrier / variance-gated cadence, `version_key` with iterations), `FedSgdTrainer` (its own
+    `ChannelManager` import in `fwdllm_trainer.py` needs the same patch), every channel method it calls on the in-memory channel, H5
+    path-style data and `client_idx_modulo`, the trace keys it reads unconditionally (`avl_events_syn_*`), workers per GPU by LLM memory;
+    `bench_pool.py --harness-args` so legs come from the harness plan.
+  - *Adoption gate (Felix passed B1, B2, B4 before any screen; B3 still open there):* B1 replay of real commits from a checkpoint within
+    1 pp; B2 per baseline × trace, 3 bench seeds vs fwdllm harness sim legs at matched clock: |AUC Δ| ≤ max(1.5 pp, either side's seed
+    range), updates / h ±10%, bytes ±5%, mean task time ±5% with 0 task-time formula mismatches; fwdllm-specific: iterations per
+    `data_id`, variance pass rate and commit cadence within the same bands; B4 bench seed floors; a red re-runs with 2-3 harness seeds
+    before naming a root (both Felix reds were draws); `config_audit` on bench legs (knobs = table, holdout P3 / P4); same results at
+    2 and 4 workers; analysis tools read bench legs unchanged; packing per FX-T73 / T74 (one math thread, CUDA contexts per GPU).
+  - *Using it:* bench results stand for real only on cells green on both links, real ⇄ harness sim (FT parity) and harness ⇄ bench
+    (FX-L96); never grade the bench against real; re-run B2 on touched cells after any shared `flame/` or trainer change.
+  *Exit:* step 0 recorded; if ported, B1 / B2 / B4 green on the fwdllm board cells.
+
+- **FT-N16 · Measured packing for FluxTune blocks · todo (on resume).** PARITY C21/C22 and Throughput: screen each block's legs at
+  production density, record per-leg CPU/RAM/GPU footprints, pack with `--gpu-share`/`--lease-from-telemetry`. *Exit:* a FluxTune block's
+  `--util` record in this doc before its first long run.
+
+- **FT-N15 · Baseline fidelity for the fwdllm family · todo (after Felix).** Adopt ROBUST L33-L37: add fwdllm baselines to
+  `baseline_reference.yaml` (local work, lr/batch, server step, K/N >= 5%, cited from their papers/code); check compute < D per setting.
+  *Exit:* `test_baseline_reference.py` covers every FluxTune baseline.
+- **FT-N12 · Port FX-N77's real-cost fixes to fwdllm · todo (after Felix).** Already shared: channel framing + MQTT transport, event-driven
+  `drain_ready`, `materialize_weights` decode in `fwdllm_aggregator`. Left: fwdllm's distribute still pickles `WEIGHTS` and
+  `fwdllm_trainer` reads it directly (→ `pack_weights` / `materialize_weights`); fwdllm files are exempt from
+  `test_no_eager_payload_logs.py`; profile a fwdllm PROF-shaped leg with `FLAME_PYSPY` first. *Exit:* fwdllm board unchanged, per-round
+  serialization ~0 in `profile_report.py`.
+- **FT-N13 · Retire legacy `trackTrainerAvail` ORACULAR (FX-N7 Felix half done) · todo.** Felix reads one runner-fanned
+  `availability_trace`. Left: `fwdllm_it_oracular`, `fedbuff_it_oracular`, `FedSgdAggregator`, `fwdllm_aggregator.check_trainer_availability`
+  → `simUnavailability`; then drop the legacy branch in `ClientAvailability._init_availability`. *Exit:* no `trackTrainerAvail` in code.
+- **FT-N16 · U6 barrier anchor on absolute ready times (FX-D151) · todo.** `fwdllm_aggregator` feeds `_barrier_anchored_lags`
+  dispatch-relative durations (`SIM_CLIENT_TASK_TRAIN_DURATION_S`); wrong once picks are dispatched at different times (top-ups).
+- **FT-N17 · Mid-barrier withheld deliveries (FX-D194) · todo.** `fwdllm_aggregator`'s incremental sync commits K fresh updates before
+  re-injecting a send-gated one due earlier; port `_sync_sim_commit_due_withheld`. *Exit:* a test as `test_sim_barrier`'s FX-D194.
+- **FT-N14 · Real abandon telemetry (FX-N77) · todo.** asyncfl selector reclaims now emit `abandon_timeout`; check fwdllm's
+  own abandon path emits it in real. *Exit:* real fwdllm abandons visible to stall-cause stamping.
+- **FT-N11 · 6 red fwdllm tests (R10) · todo.** `tests/mode/test_fwdllm_{probe_report,server_update_audit,eval_background}`
+  (source drift: moved strings, a `config`-less fake) and `test_replicate_floor` (`pretokenize_dataset.py` not in
+  `LAUNCHER_INVOKES`). *Exit:* full pytest green.
+- **FT-N1 · Re-profile `sim_charge_profiles/fluxtune.yaml` against v2 real legs · todo.** Decide whether v1
+  keeps its own profile. *Exit:* a v2 sim block graded 0-fail against v2 reals.
+- **FT-N2 · Settle whether `trackTrainerAvail` is inert at syn_0 · todo.** One `fwdllm_it_unaware` real leg
+  on `_oracular`'s node. Prediction: 38 bins / 9.64 iters per bin = the knob matters; 40 / 9.20 = the host. If it isn't inert, un-pool `fedbuff_it`.
+- **FT-N3 · Baseline wiring leftovers · todo.** (a) Confirm that the 5 new baseline keys and the
+  `fwdllm_plus` → `fwdllm_it_*` rename reached code, tests, smoke YAMLs, `plotlib/baselines.py` legends and
+  `run_parity.py`. *Exit:* a repo-wide grep for the old keys finds
+  only historical hits; `test_baselines.py` + `test_config_generator.py` are green. (b) Retune the
+  placeholder `learning_rate: 0.075` for `felix_round`/`felix_it` (`TODO(verify)` in `baselines.yaml`).
+  (c) An N=10 sim smoke per new baseline. Keep `fluxtune_dynkc` parked, not deleted.
+- **FT-N4 · Training stability I-1 under v2 · todo** (owned by fluxtune_contributions.md §8). *Exit:* a 4h+
+  run holds past the lap boundary. Gates every long experiment run.
+- **FT-N5 · Unavailability for the grad loop · blocked: Felix FX-N6 audit + FX-N9.** Reuse the audited
+  `ClientAvailability` path; harness first; syn_20_3st → syn_50_3st → mobiperf_3st. *Exit:* A1-A8/K11 + the syn_0
+  board green; withheld gradients delivered, not dropped.
+- **FT-N6 · Paper experiments, sim-only · blocked: FT-N1, FT-N4** (FT-N5 for C4 availability). Queue and figures:
+  [EXPERIMENTS.md](../paper_expts_fluxtune/EXPERIMENTS.md) §3.
+- **FT-N7 · Re-enforce `fedbuff_it_*` `utility` · todo.** Its sim floor (0.314) swallows the 0.2 gate; find
+  why two `_oracular` sim legs differ that much. More legs won't help.
+- **FT-N8 · Promote `sim_sct_ordered_drain` + `sim_model_dispatch_queue` · todo.** Currently fluxtune-only;
+  smoke fwdllm and fwdllm_it with both on, confirm inert-or-better, then promote.
+- **FT-N10 · 5 pre-existing red tests at HEAD · todo.** `test_fwdllm_eval_background` (3),
+  `test_fwdllm_probe_report::test_trainer_entrypoint_defaults_on`,
+  `test_fwdllm_server_update_audit::test_norms_are_inside_the_gate` (red with the Felix changes stashed too).
+- **FT-N9 · Estimator/optimizer roadmap (momentum S1-S3, server optimizer) · todo.** Re-measure the replicate
+  floor after the damping lands.
+
+Shared items that already touch fwdllm: parent S1 (stub mode for the fwdllm family), S2, S3 (merge
+`run_sequential.sh`), S4 (~550 legacy JSON), S5 (knob contract).
+
+---
+
+## FluxTune lessons (dos)
+
+- **FT-L1** Progress is committed `data_id`; version identity is `version_key = (model_version,
+  iteration_per_data_id)`. `data_id` wraps every lap, so never key a cache or identity on it.
+- **FT-L2** `model_version` bumps once per completed bin; a same-version re-pick gets a RETRY signal, not a
+  weight re-send. One instruction per `version_key` per trainer.
+- **FT-L3** Slot residence survives variance rollbacks: the slot frees at commit and the re-pick guard
+  holds to the agg-goal boundary (capacity vs identity, parent L5).
+- **FT-L4** The variance gate sits far below the achieved variance, so iterations per bin is a hitting time.
+  Its spread is noise; a cap or barrier pins both the residual and the floor.
+- **FT-L5** A cadence gap is always an upstream set, order or clock divergence. Reduce it to the bin's first
+  variance ÷ threshold before hunting.
+- **FT-L6** Charge profiles are per baseline, from that baseline's paired real legs, and the launch
+  preflight checks their provenance. Re-profile after ANY training-knob change, before reading a residual.
+- **FT-L7** Pair legs on `jvp_eval_mode` AND `max_runtime_s` AND commit. A pinned baseline (0.0% floor) is
+  the only one that can show a small between-config effect.
+- **FT-L8** The collapse happens at the lap boundary (~wall 4300-4800s, round 1→2); any accuracy or
+  stability claim needs a 4h+ run.
+- **FT-L9** Bench repros must build the model in the mode production uses (dropout live, training mode);
+  inference mode gives bit-exact nulls.
+- **FT-L10** Sim must produce a speedup (`vclock/wall ≥ 1`). The current limit is the serial per-commit
+  aggregator (~225 ms), not sleeps.
+- **FT-L11** An update's fate is its commit record, not its abandon record: an update aggregated after an eviction / timeout
+  is used compute. Charge a slot only while the server waits on it; a send-gated finished task frees it at completion (FT-N21).
+
+## FluxTune tripwires (don'ts)
+
+- **FT-T1** Don't touch `var_threshold`, `max_iterations_per_data_id` or DynamicKC to close a parity gap.
+- **FT-T2** Don't re-open `calculate_var` or pool assembly on cadence evidence alone; stale charges
+  explained it.
+- **FT-T3** Don't re-derive redispatch turnaround from timestamp differences (it prices waiting).
+- **FT-T4** Don't admit by lowest modeled completion time instead of first-arrived (FIFO-violating;
+  deadlocks under unavailability).
+- **FT-T5** Don't treat the round-cadence cohort pin as a defect (by design).
+- **FT-T6** Don't blame reduced precision or GPU nondeterminism for the replicate floor; the source is live
+  dropout inside the finite difference.
+- **FT-T7** Don't read cadence or convergence off a single real leg on an uncapped baseline.
+- **FT-T8** Don't run a `fluxtune` v2 sim on the v1 charge profile (`--only fluxtune` isn't blocked by the
+  preflight).
+- **FT-T9** Don't forget `export FWDLLM_FD_SCALE_INVARIANT=1` for v2 (the preflight errors without it).
+
+---
+
+## Done
+- **FT-D1** syn_0 parity landed on all nine: two-sided floors, real↔real control, median over real legs,
+  zero fails — simulate_fwdllm.md §A-§B.
+- **FT-D2** Sim barrier redesign (event-driven, no hard-coded waits), profiled charge registry,
+  estimator v2 — FWDLLM_DESIGN.md §M/§P, BASELINES.md.
+
+## Open questions (operator)
+- Does C2 (dynamic K/C) land in the headline `fluxtune` config or get descoped? (BASELINES.md ᵖ note.)
+- Should the oracular rows stay on the syn_0 board? Depends on FT-N2.
+- Checker invariants I1-I6 were drafted once and lost; what semantics were intended?
+- `felix_it`'s ON accuracy sits 1.0-3.4 pts below its OFF band (`felix_round` improved). Low priority;
+  falsified if a second loss-derived baseline also degrades ON.

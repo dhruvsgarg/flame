@@ -28,6 +28,7 @@ from flame.common.constants import (
     TrainState,
 )
 from flame.common.util import (
+    materialize_weights,
     MLFramework,
     get_ml_framework_in_use,
     weights_to_device,
@@ -85,6 +86,7 @@ class TopAggregator(BaseTopAggregator):
             logger.debug(f"received data from {end}")
             channel.set_end_property(end, PROP_ROUND_END_TIME, (round, timestamp))
 
+            materialize_weights(msg)  # FX-N77: WEIGHTS_BYTES from pack_weights
             if MessageType.WEIGHTS in msg:
                 weights = weights_to_model_device(msg[MessageType.WEIGHTS], self.model)
 

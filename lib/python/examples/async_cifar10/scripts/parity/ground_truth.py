@@ -20,30 +20,23 @@ from __future__ import annotations
 import json
 import math
 from pathlib import Path
+import os
 from typing import Optional
 
 from sortedcontainers import SortedDict
 
 from flame.availability.trace import (
+    deliverable,
     next_avail_after,
     read_trainer_unavailability,
     state_at,
 )
-from flame.config import TrainerAvailState
-
-_AVL_STATES = frozenset({TrainerAvailState.AVL_TRAIN, TrainerAvailState.AVL_EVAL})
 
 
 def resolve_trace_name(run_dir: str) -> Optional[str]:
     """Read aggregator_config.json in run_dir and return the configured trace name.
 
-    Priority mirrors debug_run.sh's own ``--trace`` substitution branch (see
-    UNAVAILABILITY_DESIGN.md Baseline matrix ⁺ note): oort/oort_star/refl write
-    trackTrainerAvail.trace; felix/oort_star (HP-level client_notify path)
-    write client_notify.trace; feddance/fedbuff write availability_trace. Try
-    in that order so a run with more than one key set (e.g. a stale YAML
-    default alongside the live debug_run.sh override) resolves to the one
-    debug_run.sh itself would have picked, not an arbitrary one.
+    Order: legacy trackTrainerAvail.trace (runs before FX-D94), then availability_trace, then client_notify.trace.
 
     Returns None if the config file is missing/unreadable or no key is set
     (gate off / syn_0-style always-available).
@@ -56,29 +49,42 @@ def resolve_trace_name(run_dir: str) -> Optional[str]:
         return None
     hp = cfg.get("hyperparameters", cfg)
 
-    track = hp.get("trackTrainerAvail") or {}
-    trace = track.get("trace")
-    if trace:
-        return trace
-
-    client_notify = hp.get("client_notify") or {}
-    trace = client_notify.get("trace")
-    if trace:
-        return trace
-
-    return hp.get("availability_trace") or None
+    track = hp.get("trackTrainerAvail") or {}  # runs before FX-D94 carry the trace here
+    if track.get("trace"):
+        return track["trace"]
+    if hp.get("availability_trace"):  # FX-D94
+        return hp["availability_trace"]
+    return (hp.get("client_notify") or {}).get("trace") or None
 
 
 def load_ground_truth(
-    trace_name: Optional[str], base_dir: Optional[str] = None
+    trace_name: Optional[str], base_dir: Optional[str] = None, run_dir: Optional[str] = None
 ) -> Optional[dict]:
-    """{task_id: SortedDict[ts -> state_str]} for every registered trainer.
-
-    Thin re-export of flame.availability.trace.read_trainer_unavailability —
-    the canonical per-trainer trace loader, already used aggregator-side.
+    """{task_id: SortedDict[ts -> state_str]} for every registered trainer, at `run_dir`'s own
+    `trace_time_scale` when given (L29: never this process's FLAME_TRACE_TIME_SCALE).
     Returns None when trace_name is falsy or the registry/trace can't be read.
     """
-    return read_trainer_unavailability(trace_name, base_dir=base_dir)
+    scale = offset = None
+    if run_dir:
+        try:
+            with open(os.path.join(run_dir, "aggregator_config.json")) as f:
+                hp = json.load(f).get("hyperparameters") or {}
+            scale, offset = hp.get("trace_time_scale"), hp.get("trace_offset_s")  # FX-N123
+        except (OSError, ValueError, AttributeError):
+            pass
+    if scale is None and offset is None:
+        return read_trainer_unavailability(trace_name, base_dir=base_dir)
+    keep = {k: os.environ.get(k) for k in ("FLAME_TRACE_TIME_SCALE", "FLAME_TRACE_OFFSET_S")}
+    os.environ["FLAME_TRACE_TIME_SCALE"] = str(scale or 1)
+    os.environ["FLAME_TRACE_OFFSET_S"] = str(offset or 0)
+    try:
+        return read_trainer_unavailability(trace_name, base_dir=base_dir)
+    finally:
+        for k, v in keep.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
 
 def by_short_id(ground_truth: Optional[dict]) -> dict:
@@ -128,14 +134,14 @@ def transitions_in_range(trace: SortedDict, t_start: float, t_end: float) -> lis
     ]
 
 
-def expected_send_gate_wait(trace: SortedDict, sct: float) -> Optional[float]:
+def expected_send_gate_wait(trace: SortedDict, sct: float, task: str = "train") -> Optional[float]:
     """Ground-truth-expected [SEND_GATE] wait (Batch 3 T3.4, A8): the trainer
     became ready to send at ``sct`` (its own trace-time-basis clock) -- how
     long should it have had to wait, per the raw trace, before the gate
     releases it?
 
-    0 if the trace already shows the trainer AVL_* at ``sct`` (no reason to
-    wait), else the gap to the next AVL_* transition. Same state-check-first
+    0 if the trace already shows the trainer able to deliver ``task`` at ``sct``
+    (no reason to wait), else the gap to the next such transition. Same state-check-first
     logic as ``ClientAvailability.compute_delivery_ts`` (client_availability.py,
     the sim-side send-gate) -- next_avail_after(trace, sct) alone is NOT
     enough, since it always returns the *next* transition even when the
@@ -147,9 +153,9 @@ def expected_send_gate_wait(trace: SortedDict, sct: float) -> Optional[float]:
     case; the caller excludes it from scoring instead of treating it as a
     numeric error.
     """
-    if state_at(trace, sct) in _AVL_STATES:
+    if deliverable(state_at(trace, sct), task):  # FX-N97: a train result needs AVL_TRAIN
         return 0.0
-    nxt = next_avail_after(trace, sct)
+    nxt = next_avail_after(trace, sct, task)
     if math.isinf(nxt):
         return None
     return max(0.0, nxt - sct)

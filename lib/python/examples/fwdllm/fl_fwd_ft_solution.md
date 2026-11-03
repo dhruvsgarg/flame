@@ -1,5 +1,7 @@
 # Forward-gradient fine-tuning — the problem, the model, and where it stands
 
+> **DEPRECATED — reference only.** The single source of truth is [ROBUST_FL_READINESS.md](../_metadata/ROBUST_FL_READINESS.md) → [FLUXTUNE_READINESS.md](../_metadata/FLUXTUNE_READINESS.md). This file only gets trimmed from here on as its content moves there; don't add to it.
+
 > **One of two documents.** Here: *why* — the failure, its mechanism, the symbols, the model, and what is
 > still unknown. Companion **[fl_fwd_ft_practice.md](fl_fwd_ft_practice.md)** (`P1…P10`) owns *what and
 > how*: every number a run produced, every flag, every run, the dead ends, the launch procedure.

@@ -1,5 +1,7 @@
 # Parity checker — implementation reference
 
+> **DEPRECATED — reference only.** Parity lives in [PARITY_READINESS.md](../../../_metadata/PARITY_READINESS.md) (rules, method, tools, scoreboard); everything else in [ROBUST_FL_READINESS.md](../../../_metadata/ROBUST_FL_READINESS.md) and its track docs. This file only shrinks as content moves there; don't add to it.
+
 Scope: **how `checks.py` grades a rung**, not the methodology or any example's live
 status. For those, read first:
 - [`../../PARITY.md`](../../PARITY.md) §1/§2 — the causal ladder, roles (CONTROL/

@@ -127,10 +127,7 @@ class TestSharedBaselinesYaml:
             felix["aggregator"]["optimizer"]["kwargs"]["agg_rate_conf"]["type"]
             == "new"
         )
-        assert (
-            felix["aggregator"]["hyperparameters"]["trackTrainerAvail"]["enabled"]
-            == "False"
-        )
+        assert "trackTrainerAvail" not in felix["aggregator"]["hyperparameters"]  # FX-D94
         assert (
             felix["trainer"]["hyperparameters"]["client_notify"]["enabled"]
             == "True"
@@ -252,7 +249,7 @@ class TestFwdllmBaselines:
         assert b["selector"]["sort"] == "async_random"
         assert b["selector"]["kwargs"]["dynamic_kc"]["enabled"] is True
         assert b["optimizer"]["sort"] == "fedbuff"
-        assert "learning_rate" not in b["optimizer"]["kwargs"]
+        assert b["optimizer"]["kwargs"]["learning_rate"] == 0.065  # S5: the table value it ran with
         assert b["optimizer"]["kwargs"]["dataset_name"] == "google-speech"
 
 

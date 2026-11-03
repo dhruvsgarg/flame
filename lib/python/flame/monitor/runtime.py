@@ -28,12 +28,13 @@ _gc_pause_accum_s = 0.0
 _gc_pause_start = None
 
 
-def _gc_pause_callback(phase, info):
+def _gc_pause_callback(phase, info, _now=time.time):
+    # FX-D57: clock bound at def; a GC at interpreter exit runs after module globals (`time`) are cleared.
     global _gc_pause_accum_s, _gc_pause_start
     if phase == "start":
-        _gc_pause_start = time.time()
+        _gc_pause_start = _now()
     elif phase == "stop" and _gc_pause_start is not None:
-        _gc_pause_accum_s += time.time() - _gc_pause_start
+        _gc_pause_accum_s += _now() - _gc_pause_start
         _gc_pause_start = None
 
 

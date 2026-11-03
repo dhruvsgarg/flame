@@ -105,7 +105,7 @@ class MiddleAggregator(BaseMiddleAggregator):
         }
         control_plane_channel.send(end_id, req)
         msg, _ = control_plane_channel.recv(end_id)
-        logger.debug(f"received message = {msg} from {end_id}")
+        logger.debug(f"received message keys={list(msg or ())} from {end_id}")
 
         if not msg:
             return []
@@ -146,7 +146,7 @@ class MiddleAggregator(BaseMiddleAggregator):
         req = {MessageType.REQ_COORDINATED_ENDS: (CHANNEL_MID_TO_TOP_AGG, state, None)}
         control_plane_channel.send(end_id, req)
         msg, _ = control_plane_channel.recv(end_id)
-        logger.debug(f"received message = {msg} from {end_id}")
+        logger.debug(f"received message keys={list(msg or ())} from {end_id}")
 
         if not msg:
             return []

@@ -74,11 +74,11 @@ class TestBaselineCatalogPresence:
     def test_oort_star_uses_fedavg_optimizer(self, baselines):
         assert baselines["oort_star"]["aggregator"]["optimizer"]["sort"] == "fedavg"
 
-    def test_oort_star_has_oracular_tracking(self, baselines):
+    def test_oort_star_has_substrate(self, baselines):
+        # FX-N7: the v1 substrate replaced the legacy ORACULAR block.
         hp = baselines["oort_star"]["aggregator"]["hyperparameters"]
-        tta = hp["trackTrainerAvail"]
-        assert tta["enabled"] == "True"
-        assert tta["type"] == "ORACULAR"
+        assert hp["simUnavailability"] is True
+        assert "trackTrainerAvail" not in hp
 
     def test_all_six_baselines_in_parity_yaml(self, parity_experiments):
         present = {e["baseline"] for e in parity_experiments if "baseline" in e}
@@ -115,28 +115,26 @@ class TestFelixWiring:
 
 
 class TestOortWiring:
-    def test_avail_select_filter_off(self, baselines, parity_experiments):
+    def test_checkin_r27(self, baselines, parity_experiments):
         hp = _merged_hp(baselines, parity_experiments,
                         "oort_n300_alpha0.1_syn0_stream_sim", "oort")
-        assert hp["avail_select_filter"] == "False"
+        assert hp["avail_knowledge"] == "checkin"
 
     def test_proactive_inflight_evict_off(self, baselines, parity_experiments):
         hp = _merged_hp(baselines, parity_experiments,
                         "oort_n300_alpha0.1_syn0_stream_sim", "oort")
         assert hp["proactive_inflight_evict"] == "False"
 
-    def test_trackTrainerAvail_enabled(self, baselines, parity_experiments):
+    def test_substrate_enabled(self, baselines, parity_experiments):
         hp = _merged_hp(baselines, parity_experiments,
                         "oort_n300_alpha0.1_syn0_stream_sim", "oort")
-        tta = hp.get("trackTrainerAvail") or {}
-        assert str(tta.get("enabled", "False")).strip().lower() == "true"
-        assert tta.get("type", "").upper() == "ORACULAR"
+        assert str(hp.get("simUnavailability")).lower() == "true"  # FX-N7
 
-    def test_trace_name_set(self, baselines, parity_experiments):
+    def test_no_static_trace(self, baselines, parity_experiments):
+        """FX-D94: the runner fans the trace; a static one goes stale."""
         hp = _merged_hp(baselines, parity_experiments,
                         "oort_n300_alpha0.1_syn0_stream_sim", "oort")
-        tta = hp.get("trackTrainerAvail") or {}
-        assert tta.get("trace"), "oort must have trackTrainerAvail.trace for starvation-advance"
+        assert "trackTrainerAvail" not in hp and "availability_trace" not in hp
 
 
 class TestOortStarWiring:
@@ -150,21 +148,18 @@ class TestOortStarWiring:
                         "oort_star_n300_alpha0.1_syn0_stream_sim", "oort_star")
         assert hp["proactive_inflight_evict"] == "False"
 
-    def test_trackTrainerAvail_enabled(self, baselines, parity_experiments):
+    def test_substrate_enabled(self, baselines, parity_experiments):
         hp = _merged_hp(baselines, parity_experiments,
                         "oort_star_n300_alpha0.1_syn0_stream_sim", "oort_star")
-        tta = hp.get("trackTrainerAvail") or {}
-        assert str(tta.get("enabled", "False")).strip().lower() == "true"
-        assert tta.get("type", "").upper() == "ORACULAR"
+        assert str(hp.get("simUnavailability")).lower() == "true"  # FX-N7
 
-    def test_differs_from_oort_only_in_filter(self, baselines, parity_experiments):
+    def test_differs_from_oort_only_in_knowledge(self, baselines, parity_experiments):
         oort_hp = _merged_hp(baselines, parity_experiments,
                              "oort_n300_alpha0.1_syn0_stream_sim", "oort")
         ostar_hp = _merged_hp(baselines, parity_experiments,
                               "oort_star_n300_alpha0.1_syn0_stream_sim", "oort_star")
-        # avail_select_filter is the only flag that differs
-        assert oort_hp["avail_select_filter"] == "False"
-        assert ostar_hp["avail_select_filter"] == "True"
+        # R27: deployed check-in vs the trace's online set
+        assert oort_hp["avail_knowledge"] == "checkin" and ostar_hp["avail_knowledge"] == "oracle"
         assert oort_hp["proactive_inflight_evict"] == ostar_hp["proactive_inflight_evict"]
         oort_tta = oort_hp.get("trackTrainerAvail", {})
         ostar_tta = ostar_hp.get("trackTrainerAvail", {})
@@ -173,29 +168,27 @@ class TestOortStarWiring:
 
 
 class TestReflWiring:
-    def test_avail_select_filter_on(self, baselines, parity_experiments):
+    def test_checkin_r27(self, baselines, parity_experiments):
         hp = _merged_hp(baselines, parity_experiments,
                         "refl_n300_alpha0.1_syn0_stream_sim", "refl")
-        assert hp["avail_select_filter"] == "True"
+        assert hp["avail_select_filter"] == "True" and hp["avail_knowledge"] == "checkin"
 
     def test_proactive_inflight_evict_off(self, baselines, parity_experiments):
         hp = _merged_hp(baselines, parity_experiments,
                         "refl_n300_alpha0.1_syn0_stream_sim", "refl")
         assert hp["proactive_inflight_evict"] == "False"
 
-    def test_trackTrainerAvail_enabled(self, baselines, parity_experiments):
+    def test_substrate_enabled(self, baselines, parity_experiments):
         hp = _merged_hp(baselines, parity_experiments,
                         "refl_n300_alpha0.1_syn0_stream_sim", "refl")
-        tta = hp.get("trackTrainerAvail") or {}
-        assert str(tta.get("enabled", "False")).strip().lower() == "true"
-        assert tta.get("type", "").upper() == "ORACULAR"
+        assert str(hp.get("simUnavailability")).lower() == "true"  # FX-N7
 
 
 class TestFedDanceWiring:
-    def test_avail_select_filter_on(self, baselines, parity_experiments):
+    def test_checkin_r27(self, baselines, parity_experiments):
         hp = _merged_hp(baselines, parity_experiments,
                         "feddance_n300_alpha0.1_syn0_stream_sim", "feddance")
-        assert hp["avail_select_filter"] == "True"
+        assert hp["avail_select_filter"] == "True" and hp["avail_knowledge"] == "checkin"
 
     def test_proactive_inflight_evict_off(self, baselines, parity_experiments):
         hp = _merged_hp(baselines, parity_experiments,
@@ -212,10 +205,10 @@ class TestFedDanceWiring:
 
 
 class TestFedBuffWiring:
-    def test_avail_select_filter_off(self, baselines, parity_experiments):
+    def test_checkin_r27(self, baselines, parity_experiments):
         hp = _merged_hp(baselines, parity_experiments,
                         "fedbuff_n300_alpha0.1_syn0_stream_sim", "fedbuff")
-        assert hp["avail_select_filter"] == "False"
+        assert hp["avail_knowledge"] == "checkin"
 
     def test_proactive_inflight_evict_off(self, baselines, parity_experiments):
         hp = _merged_hp(baselines, parity_experiments,
@@ -227,20 +220,14 @@ class TestFedBuffWiring:
                         "fedbuff_n300_alpha0.1_syn0_stream_sim", "fedbuff")
         assert hp.get("sim_unavailability") == "True", (
             "fedbuff must activate the availability gate via sim_unavailability "
-            "(unaware baseline: gate loads trace but does not filter selection pool)"
+            "(the trace drives its sim check-ins)"
         )
 
-    def test_availability_trace_set(self, baselines, parity_experiments):
+    def test_no_static_trace(self, baselines, parity_experiments):
+        """FX-D94: run 27 fedbuff carried a stale static syn_0 beside the fanned syn_50_3st."""
         hp = _merged_hp(baselines, parity_experiments,
                         "fedbuff_n300_alpha0.1_syn0_stream_sim", "fedbuff")
-        has_trace = (
-            hp.get("availability_trace")
-            or (hp.get("client_notify") or {}).get("trace")
-        )
-        assert has_trace, (
-            "fedbuff must have availability_trace (or client_notify.trace) so "
-            "_init_availability can load the syn_0 trace without warning"
-        )
+        assert "availability_trace" not in hp and "client_notify" not in hp
 
     def test_trackTrainerAvail_disabled(self, baselines, parity_experiments):
         hp = _merged_hp(baselines, parity_experiments,
@@ -249,3 +236,21 @@ class TestFedBuffWiring:
         assert str(tta.get("enabled", "False")).strip().lower() != "true", (
             "fedbuff should not use oracular tracking"
         )
+
+
+# R27 (ROBUST, operator 10-21): Felix by its notify; baselines by check-in (F42-T1); `*` variants are labelled oracle.
+R27_ALLOWED = {"felix": "notify", "oort_star": "oracle"}
+R27_DEFAULT = "checkin"
+
+
+def test_r27_availability_knowledge_per_baseline(baselines, parity_experiments):
+    seen = set()
+    for exp in parity_experiments:
+        b = exp["baseline"]
+        hp = _merged_hp(baselines, parity_experiments, exp["name"], b)
+        want = R27_ALLOWED.get(b, R27_DEFAULT)
+        assert hp.get("avail_knowledge") == want, (exp["name"], hp.get("avail_knowledge"))
+        assert str(hp.get("avail_select_filter")) == ("False" if want == "none" else "True"), exp["name"]
+        assert (str(hp.get("proactive_inflight_evict")) == "True") == (want == "notify"), exp["name"]
+        seen.add(b)
+    assert {"felix", "fedbuff", "oort", "oort_star", "refl", "feddance"} <= seen

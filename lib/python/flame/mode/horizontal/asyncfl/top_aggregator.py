@@ -15,21 +15,28 @@
 # SPDX-License-Identifier: Apache-2.0
 """Asynchronous horizontal FL top level aggregator."""
 
+import itertools
 import logging
+import math
 import time
 from collections import deque
 from datetime import datetime, timedelta
 
 import numpy as np
-from flame.channel import VAL_CH_STATE_RECV, VAL_CH_STATE_SEND
-from flame.end import KEY_END_STATE, VAL_END_STATE_NONE
+from flame.channel import VAL_CH_STATE_RECV, VAL_CH_STATE_SEND, wait_arrival
+from flame import harness
+from flame.end import KEY_END_STATE, VAL_END_STATE_NONE, VAL_END_STATE_RECVD
 from flame.common.constants import DeviceType
+from flame.config import TrainerAvailState
 from flame.common.util import (
     materialize_weights,
+    model_device,
+    pack_weights,
     weights_to_device,
     weights_to_model_device,
 )
 from flame.mode.composer import CloneComposer
+from flame.mode.horizontal.nonfinite import hp_of as nonfinite_hp, nonfinite_reason, reject as nonfinite_reject
 from flame.mode.horizontal.syncfl.top_aggregator import (
     TAG_AGGREGATE,
     TAG_DISTRIBUTE,
@@ -42,8 +49,10 @@ from flame.mode.tasklet import Loop, Tasklet
 from flame.optimizer.train_result import TrainResult
 from flame import telemetry
 from flame.telemetry.events import build_agg_round, build_dispatch, build_utility_belief
+from flame.telemetry.agg_timing import agg_timing
 from flame.sim import SimReorderBuffer
-from flame.selector.properties import PROP_SIM_SEND_TS, PROP_SIM_COMPLETION_TS
+from flame.selector.properties import (PROP_AVL_STATE, PROP_LAST_PROBE_TS, PROP_LAST_REPORT_TS, PROP_LAST_REPORT_UPDATES,
+                                       PROP_SIM_COMPLETION_TS, PROP_SIM_SEND_TS)
 from flame.selector.oort import (
     PROP_DATASET_SIZE,
     PROP_LAST_SELECTED_ROUND,
@@ -87,6 +96,11 @@ class TopAggregator(SyncTopAgg):
     """Asynchronous top level Aggregator implements an ML aggregation
     role."""
 
+    # FX-D23: `send + D` lower-bounds sct, so a zero-slack gate is exact; fwdllm keeps _SIM_ORDER_SLACK_S.
+    _SIM_ORDER_SLACK_DEFAULT_S = 0.0
+    _CHECKIN_SYNC = False  # F42-T1: pool check-ins while slots are free
+    _sim_order_slack_s = _SIM_ORDER_SLACK_DEFAULT_S
+
     def internal_init(self) -> None:
         """Initialize internal state for role."""
         logger.info("Calling internal init for SYNC from ASYNC")
@@ -95,6 +109,7 @@ class TopAggregator(SyncTopAgg):
         self._agg_goal_cnt = 0
         self._agg_goal_weights = None
         self._agg_goal = self.config.hyperparameters.aggregation_goal or 1
+        self._init_dynamic_kc()
         # An end may only contribute once per aggregation cycle (reset
         # alongside _agg_goal_cnt in _reset_agg_goal_variables). Guards
         # against a duplicate/late message from an end that was reclaimed
@@ -105,6 +120,46 @@ class TopAggregator(SyncTopAgg):
         # otherwise lacks. See examples/MIGRATING_TO_LAUNCHER.md's
         # aggregator gotchas (§2).
         self._agg_cycle_contributed_ends: set = set()
+        # FX-D9: (end, model_version) of every committed train update; an update's identity.
+        self._contributed_versions: set = set()
+        # FX-D9: (end, task) -> [version, dispatch_ts, retries at that version] of its last dispatch.
+        self._task_ledger: dict = {}
+        self._last_rx_ts: dict = {}  # FX-L27: end -> `_avail_now` of its last received reply (real)
+        # FX-N46: sim holds an ingested trainer's identity until the agg-goal cleanup, as real does.
+        self._sim_identity_until_aggregate = str(
+            getattr(self.config.hyperparameters, "sim_identity_until_aggregate", True)).lower() == "true"
+        # FX-N54: with no recv end, a due withheld delivery is work to commit, not starvation.
+        self._sim_reinject_when_idle = str(
+            getattr(self.config.hyperparameters, "sim_reinject_when_idle", True)).lower() == "true"
+        if str(getattr(self.config.hyperparameters, "unaware_ignores_trace", True)).lower() != "true":
+            raise ValueError("R27: unaware_ignores_trace=False lets an unaware baseline select on the oracle trace")
+        # FX-N56: an unaware baseline's withheld trainer keeps its slot until its 90s timeout, as in real.
+        self._sim_hold_withheld_slot = str(
+            getattr(self.config.hyperparameters, "sim_hold_withheld_slot", True)).lower() == "true"
+        # FX-N60: an evicted/abandoned end's late update is ingested, as real receives it.
+        self._sim_ingest_evicted = str(
+            getattr(self.config.hyperparameters, "sim_ingest_evicted", True)).lower() == "true"
+        # FX-N160: the commit gate waits for an evicted end's in-transit update due before the buffered min.
+        self._sim_gate_evicted = str(
+            getattr(self.config.hyperparameters, "sim_gate_evicted", True)).lower() == "true"
+        # FX-D90: a send-gated trainer's held slot frees when its delivery commits, as in real.
+        self._sim_hold_delivering_slot = str(
+            getattr(self.config.hyperparameters, "sim_hold_delivering_slot", True)).lower() == "true"
+        # FX-N157: a client committed before its sct (clock-jump clamp) stays busy until sct, as its device still computes.
+        self._sim_busy_until_sct = str(getattr(self.config.hyperparameters, "sim_busy_until_sct", True)).lower() == "true"
+        self._sim_busy_until: dict = {}
+        # FX-D89: the abandon deadline is a sim clock event, as real's selector timer.
+        self._sim_abandon_wakes = str(
+            getattr(self.config.hyperparameters, "sim_abandon_wakes", True)).lower() == "true"
+        # FX-D137: a commit-free return of _sim_recv_min keeps buffered ends' slots.
+        self._sim_keep_slots_on_wake = str(
+            getattr(self.config.hyperparameters, "sim_keep_slots_on_wake", True)).lower() == "true"
+        # FX-D88: send-gated buffer heads are withheld before the gate, so it waits on earlier in-flight completions.
+        self._sim_withhold_before_gate = str(
+            getattr(self.config.hyperparameters, "sim_withhold_before_gate", True)).lower() == "true"
+        # FX-D176: an eval's expected completion is its dispatch (evals span << D), so the gate waits for it.
+        self._sim_eval_expect_at_send = str(
+            getattr(self.config.hyperparameters, "sim_eval_expect_at_send", True)).lower() == "true"
 
         self._updates_in_queue = 0
         self._updates_recevied = {}
@@ -161,6 +216,8 @@ class TopAggregator(SyncTopAgg):
         # Excludes exp <= vclock (due/abandoned) so a lost entry can't pin the clock.
         _clamp = getattr(self.config.hyperparameters, "sim_clock_jump_clamp", True)
         self._sim_clock_jump_clamp: bool = bool(_clamp) if _clamp is not None else True
+        _slack = getattr(self.config.hyperparameters, "sim_order_slack_s", None)
+        self._sim_order_slack_s = float(_slack) if _slack is not None else self._SIM_ORDER_SLACK_DEFAULT_S
 
         # Event-driven re-dispatch (async only; FALSIFIED, kept off — PARITY.md §3.evt).
         # Re-stamps each freed slot's refill at the vclock it FREED (not the shared round-start
@@ -178,6 +235,13 @@ class TopAggregator(SyncTopAgg):
         # recv_fifo path. Supersedes staggered re-dispatch, so the two aren't enabled together.
         _drain = getattr(self.config.hyperparameters, "sim_sct_ordered_drain", False)
         self._sim_sct_ordered_drain: bool = bool(_drain) if _drain is not None else False
+        # Cold-start gate (FX-D4); default on (FX-D8).
+        _csg = getattr(self.config.hyperparameters, "sim_cold_start_gate", True)
+        self._sim_cold_start_gate: bool = True if _csg is None else bool(_csg)
+        _cap = getattr(self.config.hyperparameters, "sim_gate_compute_cap_s", None)
+        # FX-D50: unset = the task timeout.
+        self._sim_gate_compute_cap_s: float = float(_cap) if _cap is not None else self._task_timeout_s()
+        self._sim_dispatch_wall: dict = {}  # end -> wall time of its last sim dispatch
         # One-in-flight-per-trainer invariant (§3.resid, felix async). A trainer with an update
         # still outstanding must NOT be re-selected — real keeps it out of VAL_CH_STATE_SEND
         # until its update returns and is aggregated. Default off ⇒ unchanged selection.
@@ -192,16 +256,105 @@ class TopAggregator(SyncTopAgg):
         # Real-mode settle sleep before selection (0 = compute-bound).
         _settle = getattr(self.config.hyperparameters, "real_distribute_settle_s", 0.1)
         self._real_distribute_settle_s: float = float(_settle) if _settle is not None else 0.1
+        # FX-N18: real ingest via streamer-free drain_ready (default on; false ⇒ recv_fifo).
+        self._real_drain_ready_ingest: bool = str(
+            getattr(self.config.hyperparameters, "real_drain_ready_ingest", True)).lower() == "true"
+        self._real_drain_pending: list = []  # (arrival ts, seq, (msg, metadata))
+        self._real_recv_seq = 0
 
         self._prev_distribute_weights_success = False
 
 
         self.all_trainers = set()
 
+    def _init_dynamic_kc(self) -> None:
+        """FX-N109 I5: `selector.kwargs.dynamic_kc` {enabled, stats, policy, policy_kwargs, k_/c_ min/max}; absent = static K / c."""
+        conf = (self.config.selector.kwargs or {}).get("dynamic_kc") or {}
+        on = lambda k: str(conf.get(k, False)).lower() == "true"
+        self._dkc, self._dkc_pending_k, self._dkc_updates = None, None, 0
+        self._dkc_c_config = int((self.config.selector.kwargs or {}).get("c", 0) or 0)
+        self._dkc_k_config = self._agg_goal
+        self._dkc_stats, self._dkc_losses = None, []
+        # F46 S4: loss phase for the server step (opt.phase_step) and / or the felix_c policy's c
+        self._phase = None
+        if getattr(self.optimizer, "phase_step", False) or conf.get("policy") == "felix_c":
+            from flame.selector.loss_phase import LossPhase
+            self._phase = LossPhase(window=int(conf.get("phase_window", 0) or 0) or self._n_trainers_hint())
+        if on("enabled") or on("stats"):
+            from flame.selector.update_stats import UpdateStats
+            self._dkc_stats = UpdateStats()
+        if on("enabled"):
+            from flame.selector.dynamic_kc_controller import DynamicKCController
+            from flame.selector.dynamic_kc_policy import build_policy
+            self._dkc = DynamicKCController(
+                build_policy(conf.get("policy", "noop"), conf.get("policy_kwargs") or {}),
+                k_init=self._agg_goal, c_init=self._dkc_c_config or self._agg_goal,
+                k_min=int(conf.get("k_min", 1)), k_max=int(conf.get("k_max", 100)),
+                c_min=int(conf.get("c_min", 1)), c_max=int(conf.get("c_max", self._dkc_c_config or 100)),  # c <= config c: EV8
+                k_follows_c=str(conf.get("k_follows_c", True)).lower() == "true")
+
+    def _n_trainers_hint(self) -> int:
+        """Population size for one sweep of updates: the configured trainer count, else the join minimum."""
+        hp = self.config.hyperparameters
+        return int(getattr(hp, "num_trainers", 0) or getattr(hp, "min_trainers_to_start", 0) or 100)
+
+    def _dynamic_kc_step(self, channel) -> None:
+        """FX-N109 I5: after a commit, close the cycle's update stats and ask the controller for the next K / c."""
+        self._dkc_updates += self._agg_goal
+        st = self._dkc_stats.close()
+        ends = channel.all_ends() or []  # every joined end; channel.ends() would run a selection (F46 smoke)
+        states = [channel.get_end_property(e, PROP_AVL_STATE) for e in ends]
+        train_ok = {None, TrainerAvailState.AVL_TRAIN.value}  # no trace = every end trainable
+        self._dkc_losses = getattr(self, "_dkc_losses", [])
+        metrics = {"n_updates": self._dkc_updates, "model_version": self._round, "c_config": self._dkc_c_config,
+                   "n_trainers": len(channel.all_ends() or []), "cycle_losses": self._dkc_losses,
+                   "cycle_client_losses": getattr(self, "_dkc_client_losses", []),
+                   "n_eligible_train": sum(s in train_ok for s in states), "noise_scale": st.get("noise_scale"),
+                   "avg_staleness": float(np.mean(self._round_update_values["staleness"] or [0])),
+                   "now": self._avail_now(), "val_probes": getattr(self, "_val_probes", []),
+                   "val_reports": getattr(self, "_val_reports", []), "k_config": self._dkc_k_config,
+                   "loss_phase": self._phase.phi if getattr(self, "_phase", None) is not None else None}
+        k, c = self._agg_goal, self._dkc_c_config
+        if self._dkc is not None:
+            k, c = self._dkc.step(metrics)
+            self._dkc_pending_k = k  # applied at the cycle reset: the inner loop exits on _agg_goal_cnt == _agg_goal
+            channel.set_property("dynamic_c", c)
+        if telemetry.is_enabled():
+            from flame.selector.update_stats import cos_split
+            telemetry.emit("dynamic_kc", round=self._round, k=k, c=c, step_scale=getattr(self.optimizer, "step_scale", None),
+                           cos_stale_minus_fresh=cos_split(
+                st.get("cos_by_staleness") or []),
+                **{x: v for x, v in metrics.items()
+                   if x not in ("model_version", "cycle_losses", "cycle_client_losses", "val_probes", "val_reports")},
+                n_val_probes=len(metrics["val_probes"]), **(self._dkc.policy_state() if self._dkc is not None else {}),
+                loss_per_sample=float(np.mean(self._dkc_losses)) if self._dkc_losses else None,
+                **{x: st.get(x) for x in ("n", "g2", "tr_sigma", "sq_mean", "mean_sq")})
+        self._dkc_losses, self._dkc_client_losses, self._val_probes, self._val_reports = [], [], [], []
+
+    def _ingest_val_report(self, end, msg, src) -> None:
+        """F42c / FX-N127 V2: pool a held-out report. (nll, correct, n) feeds pace_c; a V2 report (+ d_nll, d_correct, n_paired,
+        prev version) feeds pace_gain with the updates and seconds between the two models it pairs (version -> (U, t) map)."""
+        rep, v, now = msg[MessageType.VAL_PROBE], msg[MessageType.MODEL_VERSION], self._avail_now()
+        self._val_probes = getattr(self, "_val_probes", [])
+        self._val_probes.append((now, *rep[:3]))
+        e = dict(t=now, src=src, nll=rep[0], correct=rep[1], n=rep[2])
+        if len(rep) >= 7 and rep[5] > 0:
+            vu = getattr(self, "_version_updates", {})
+            (u1, t1), (u0, t0) = vu.get(v, (0, 0.0)), vu.get(rep[6], (0, 0.0))
+            e.update(d_nll=rep[3], d_correct=rep[4], n_pair=rep[5], du=u1 - u0, dt=t1 - t0)
+        self._val_reports = getattr(self, "_val_reports", [])
+        self._val_reports.append(e)
+        if telemetry.is_enabled():
+            telemetry.emit("val_probe", round=self._round, end_id=end, model_version=v, loss=rep[0] / max(rep[2], 1),
+                           acc=rep[1] / max(rep[2], 1), n=rep[2], vclock_now=now, src=src,
+                           **{k: e[k] for k in ("d_nll", "d_correct", "n_pair", "du", "dt") if k in e})
+
     def _reset_agg_goal_variables(self):
         logger.debug("##### reset agg goal variables")
         # reset agg goal count
         self._agg_goal_cnt = 0
+        if getattr(self, "_dkc_pending_k", None) is not None:  # bare-init guard (tests)
+            self._agg_goal, self._dkc_pending_k = self._dkc_pending_k, None
 
         # reset the per-cycle duplicate-contribution guard (see internal_init)
         self._agg_cycle_contributed_ends = set()
@@ -231,9 +384,63 @@ class TopAggregator(SyncTopAgg):
             return False
 
     # C.2 / C.3 commit-loop wiring (_sim_pop_committable, _sim_reinject_ready_withheld,
-    # _sim_abandon_stalled) is shared, library-level in ClientAvailability so the oort
+    # _abandon_stalled) is shared, library-level in ClientAvailability so the oort
     # stack rides the identical logic. The asyncfl gate tracker (_sim_inflight_expected)
     # is reached via the mixin's guarded _avail_drop_inflight hook.
+
+    def _sim_cold_start_inflight(self) -> set:
+        """First-contact ends (no known delay) dispatched within the compute cap and not yet
+        buffered or committed -- invisible to _sim_inflight_expected. Empty when the flag is off."""
+        if not getattr(self, "_sim_cold_start_gate", False):
+            return set()
+        cap = getattr(self, "_sim_gate_compute_cap_s", 10.0)
+        now = time.time()
+        return {
+            e for e, w in getattr(self, "_sim_dispatch_wall", {}).items()
+            if e not in self._sim_known_delay_s and now - w <= cap
+            and not self._sim_buffer.has(e) and e not in self._sim_committed
+        }
+
+    def _sim_cold_start_busy(self) -> set:
+        """First-contact ends dispatched and not yet buffered/committed/freed. Uncapped: busy
+        (slot identity) lasts until commit; the wall cap only bounds the commit-order wait."""
+        if not getattr(self, "_sim_cold_start_gate", False):
+            return set()
+        return {
+            e for e in getattr(self, "_sim_dispatch_wall", {})
+            if e not in self._sim_known_delay_s
+            and not self._sim_buffer.has(e) and e not in self._sim_committed
+        }
+
+    def _sim_ingest_evicted_updates(self, channel) -> None:
+        """FX-N60: buffer an evicted/abandoned end's arrived update; no probe set covers it."""
+        if not getattr(self, "_sim_ingest_evicted", False) or not getattr(self, "pending_withheld", None):
+            return
+        waiting = [e for e in self.pending_withheld
+                   if e not in getattr(self, "_sim_withheld_payload", {}) and not self._sim_buffer.has(e) and channel.has(e)]
+        if not waiting:
+            return
+        for msg, metadata in channel.drain_ready(waiting, timeout=None):
+            if not msg:
+                continue
+            sct = msg.get(MessageType.SIM_COMPLETION_TS)
+            self._sim_buffer.add(metadata[0], float(sct if sct is not None else self._vclock.now), (msg, metadata))
+            logger.info(f"[EVICTED_INGEST] end={str(metadata[0])[-4:]} sct={sct}")
+
+    def _sim_evicted_in_transit(self, channel) -> dict:
+        """FX-N160: evicted ends whose update has not arrived -> its earliest delivery (pending_withheld lower bound)."""
+        if not getattr(self, "_sim_gate_evicted", False) or not getattr(self, "pending_withheld", None):
+            return {}
+        pay, gave_up = getattr(self, "_sim_withheld_payload", {}), self.__dict__.setdefault("_sim_evicted_gave_up", set())
+        return {e: float(d) for e, d in self.pending_withheld.items()
+                if math.isfinite(d) and e not in pay and (e, d) not in gave_up and not self._sim_buffer.has(e) and channel.has(e)}
+
+    def _sim_unknown_stuck(self, pending_ends) -> bool:
+        """Cold-start gate: hold while a pending first-contact end may still be computing."""
+        stuck = bool(self._sim_cold_start_inflight() & set(pending_ends))
+        if stuck:
+            self._sim_cold_start_holds = getattr(self, "_sim_cold_start_holds", 0) + 1
+        return stuck
 
     def _sim_recv_min(self, channel, recv_ends):
         """Barrier: drain the in-flight set, then commit the smallest
@@ -253,7 +460,9 @@ class TopAggregator(SyncTopAgg):
         if not hasattr(self, "_sim_known_delay_s"):  # bare-init guard (tests)
             self._sim_known_delay_s = {}
         barrier_t0 = time.time()
-        deadline = barrier_t0 + RECV_TIMEOUT_WAIT_S
+        # FX-D50: no update is lost before its task timeout.
+        _ttl = self._task_timeout_s() if hasattr(self, "_task_timeout_s") else RECV_TIMEOUT_WAIT_S
+        deadline = barrier_t0 + max(RECV_TIMEOUT_WAIT_S, _ttl)
         drained_all = True
         probed = 0
         # Eager drain + virtual-completion gate: each pass pulls every ready update
@@ -275,11 +484,13 @@ class TopAggregator(SyncTopAgg):
             if self._sim_buffer.has(actual_end):
                 self._sim_dupadd = getattr(self, "_sim_dupadd", 0) + 1
             self._sim_buffer.add(actual_end, float(sct), (msg, metadata))
+            if actual_end in self._sim_inflight_expected:  # FX-D23: arrived → exact sct, not the leg-free lower bound
+                self._sim_inflight_expected[actual_end] = float(sct)
             if not hasattr(self, "_sim_enqueue_round"):
                 self._sim_enqueue_round = {}
             self._sim_enqueue_round.setdefault(actual_end, getattr(self, "_round", 0))
 
-        for _pass in range(_SIM_GATE_MAX_PASSES):
+        for _pass in itertools.count():  # FX-D50: bounded by `deadline`
             # Ingest arrived in-flight updates into the sct-ordered buffer. The
             # probe set is the recv_ends snapshot (taken once upstream in
             # _aggregate_weights) UNION the LIVE in-flight set — a stale snapshot
@@ -288,9 +499,12 @@ class TopAggregator(SyncTopAgg):
             # commit past it (past-dated, staleness drift).
             live_inflight = [
                 e for e in set(recv_ends) | set(self._sim_inflight_expected)
+                | self._sim_cold_start_inflight()
                 if channel.has(e)
                 and not self._sim_buffer.has(e) and e not in self._sim_committed
             ]
+            _evicted = self._sim_evicted_in_transit(channel)
+            live_inflight += [e for e in _evicted if e not in live_inflight]
             # ends still pending ingestion this pass — drives the "nothing left to
             # commit and nothing in flight" loop-exit below (per ingestion path).
             _pending_ends = live_inflight
@@ -303,7 +517,7 @@ class TopAggregator(SyncTopAgg):
             _pre_inflight = [
                 (e, exp) for e, exp in self._sim_inflight_expected.items()
                 if not self._sim_buffer.has(e) and e not in self._sim_committed
-            ]
+            ] + list(_evicted.items())
             if getattr(self, "_sim_sct_ordered_drain", False):
                 # sct-faithful ingestion: drain each live in-flight end's rx queue
                 # DIRECTLY (no recv_fifo streamer), so the buffer is a COMPLETE
@@ -343,7 +557,7 @@ class TopAggregator(SyncTopAgg):
                 # fragments are mid-reassembly.
                 _bmin = self._sim_buffer.peek_min_ts()
                 _probe_ceiling = (
-                    _bmin + _SIM_ORDER_SLACK_S if _bmin is not None else float("inf")
+                    _bmin + self._sim_order_slack_s if _bmin is not None else float("inf")
                 )
                 to_probe = [e for e in recv_ends
                             if not self._sim_buffer.has(e) and e not in self._sim_committed]
@@ -354,6 +568,9 @@ class TopAggregator(SyncTopAgg):
                     and not self._sim_buffer.has(e) and e not in self._sim_committed
                     and (self._sim_end_has_ready_msg(channel, e) or exp <= _probe_ceiling)
                 ]
+                to_probe += [e for e in self._sim_cold_start_inflight()
+                             if e not in _seen and e not in to_probe and channel.has(e)]
+                to_probe += [e for e in _evicted if e not in to_probe]
                 _pending_ends = to_probe
                 if to_probe:
                     probed = max(probed, len(to_probe))
@@ -373,6 +590,8 @@ class TopAggregator(SyncTopAgg):
                         _ingest(msg, metadata)
                     drained_all = all(self._sim_buffer.has(e) for e in to_probe)
             # Gate: earliest expected completion among un-drained in-flight trainers.
+            if getattr(self, "_sim_withhold_before_gate", True) and getattr(self, "trainer_event_dict", None) is not None:
+                self._sim_withhold_gated_heads(channel)
             buffered_min = self._sim_buffer.peek_min_ts()
             _stuck_end, min_stuck = None, None
             for e, exp in self._sim_inflight_expected.items():
@@ -380,18 +599,28 @@ class TopAggregator(SyncTopAgg):
                     continue  # already drained into the buffer, or committed
                 if min_stuck is None or exp < min_stuck:
                     min_stuck, _stuck_end = exp, e
+            _evicted = self._sim_evicted_in_transit(channel)
+            for e, exp in _evicted.items():
+                if min_stuck is None or exp < min_stuck:
+                    min_stuck, _stuck_end = exp, e
             earlier_stuck = (buffered_min is not None and min_stuck is not None
-                             and min_stuck + _SIM_ORDER_SLACK_S < buffered_min)
+                             and min_stuck + self._sim_order_slack_s < buffered_min)
+            unknown_stuck = self._sim_unknown_stuck(_pending_ends)
             if buffered_min is None and not _pending_ends:
                 break  # nothing to commit and nothing in flight
-            if not earlier_stuck:
+            if not earlier_stuck and not unknown_stuck:
                 break  # the buffered minimum is the true next completion
             if time.time() >= deadline:
                 # A stuck trainer never arrived within the failsafe; stop waiting
                 # for it (treat as lost so it can't block future commits too) and
                 # commit the buffered min.
                 self._sim_gate_failsafe = getattr(self, "_sim_gate_failsafe", 0) + 1
-                self._sim_inflight_expected.pop(_stuck_end, None)
+                logger.warning(f"[SIM_GATE_FAILSAFE] round={getattr(self, '_round', -1)} dropping "
+                               f"{str(_stuck_end)[-4:]} exp={min_stuck} after {time.time() - barrier_t0:.0f}s wall")
+                if _stuck_end is not None:
+                    self._sim_inflight_expected.pop(_stuck_end, None)
+                    if _stuck_end in _evicted:
+                        self.__dict__.setdefault("_sim_evicted_gave_up", set()).add((_stuck_end, _evicted[_stuck_end]))
                 break
             # else: HOLD — an in-flight trainer is expected to complete before the
             # buffered min, so committing now would lap it (the past-dating source).
@@ -399,6 +628,21 @@ class TopAggregator(SyncTopAgg):
             self._sim_gate_holds = getattr(self, "_sim_gate_holds", 0) + 1
         barrier_wait = time.time() - barrier_t0
 
+        _abandon_ts = self._next_abandon_ts(channel) if getattr(self, "_sim_abandon_wakes", True) else None
+        if _abandon_ts is not None:  # FX-D89: abandon on time, so distribute replaces the end then
+            # any earlier event wins: a buffered completion, a withheld delivery, an in-flight update still in transit
+            _bmin = self._sim_buffer.peek_min_ts()
+            _transit = [t for e, t in self._sim_inflight_expected.items()
+                        if not self._sim_buffer.has(e) and e not in self._sim_committed]
+            _next_ts = min(list(getattr(self, "pending_withheld", {}).values()) + _transit
+                           + ([_bmin] if _bmin is not None else []), default=math.inf)
+            _budget = float(getattr(self.config.hyperparameters, "max_experiment_runtime_s", None) or math.inf)
+            if _abandon_ts < min(_next_ts, _budget) and not self._sim_cold_start_inflight():
+                self._vclock.advance(_abandon_ts + 1e-6)
+                logger.info(f"[ABANDON_WAKE] vclock->{self._vclock.now:.1f} next={_next_ts:.1f}")
+                if getattr(self, "_sim_keep_slots_on_wake", True):
+                    self._sim_keep_buffered_slots(channel)
+                return None, ("", datetime.now())
         # Pop the minimum regardless of recv_ends membership so buffered updates
         # are not lost when an end is cleaned up before its commit. First re-inject
         # any withheld update whose delivery_ts has arrived (C.2), then pop the
@@ -408,6 +652,8 @@ class TopAggregator(SyncTopAgg):
         self._sim_reinject_ready_withheld()
         popped = self._sim_pop_committable(channel)
         if popped is None:
+            if getattr(self, "_sim_keep_slots_on_wake", True):
+                self._sim_keep_buffered_slots(channel)
             return None, ("", datetime.now())
         _end, sct, (m, md) = popped
         # Clamp the clock-jump to the earliest in-flight FUTURE modeled completion
@@ -425,11 +671,12 @@ class TopAggregator(SyncTopAgg):
                 if exp > _now and (_min_future_exp is None or exp < _min_future_exp):
                     _min_future_exp = exp
             if _min_future_exp is not None:
-                _advance_to = max(_now, min(sct, _min_future_exp + _SIM_ORDER_SLACK_S))
+                _advance_to = max(_now, min(sct, _min_future_exp + self._sim_order_slack_s))
         self._advance_sim_clock(_advance_to)
-        # Re-dispatch tell: captured BEFORE the add, since _sim_committed already
-        # holds _end on a second commit. Drives the past-dating source breakdown.
-        _was_recommit = _end in self._sim_committed
+        if sct > self._vclock.now and getattr(self, "_sim_busy_until_sct", True):  # FX-N157
+            self.__dict__.setdefault("_sim_busy_until", {})[_end] = sct
+        # Re-dispatch tell (second contribution this cycle). Drives the past-dating source breakdown.
+        _was_recommit = _end in getattr(self, "_agg_cycle_contributed_ends", ())
         if not hasattr(self, "_sim_commit_count"):
             self._sim_commit_count = {}
         self._sim_commit_count[_end] = self._sim_commit_count.get(_end, 0) + 1
@@ -472,13 +719,15 @@ class TopAggregator(SyncTopAgg):
                 self._sim_free_slot_ts.append(self._vclock.now)
         # Gate bookkeeping: trainer no longer in flight; its MODELED_DELAY_S
         # was already learned into _sim_known_delay_s by _ingest above.
-        self._sim_inflight_expected.pop(_end, None)
+        if self._sim_inflight_expected.get(_end, float(sct)) == float(sct):  # FX-N157: keep a newer dispatch's entry
+            self._sim_inflight_expected.pop(_end, None)
+            getattr(self, "_sim_dispatch_wall", {}).pop(_end, None)
         _commit_gap = self._vclock.now - sct
         # a "past-dated" commit is one the clock already lapped
         # (sct < vclock by more than the gate slack) — exactly what inflates
         # version-vs-clock and drifts staleness. The predictor fix should drive
         # this count and the cumulative past-dating toward zero.
-        if _commit_gap > _SIM_ORDER_SLACK_S:
+        if _commit_gap > self._sim_order_slack_s:
             self._sim_pastdated_commits = getattr(self, "_sim_pastdated_commits", 0) + 1
             self._sim_pastdated_gap_cum = getattr(self, "_sim_pastdated_gap_cum", 0.0) + _commit_gap
             self._sim_pastdated_gap_max = max(getattr(self, "_sim_pastdated_gap_max", 0.0), _commit_gap)
@@ -536,6 +785,7 @@ class TopAggregator(SyncTopAgg):
                 f"inflight_tracked={len(self._sim_inflight_expected)} "
                 f"gate_holds={getattr(self, '_sim_gate_holds', 0)} "
                 f"gate_failsafe={getattr(self, '_sim_gate_failsafe', 0)} "
+                f"cold_start_holds={getattr(self, '_sim_cold_start_holds', 0)} "
                 f"pastdated_commits={getattr(self, '_sim_pastdated_commits', 0)} "
                 f"pastdated_gap_cum={getattr(self, '_sim_pastdated_gap_cum', 0.0):.0f} "
                 f"pastdated_gap_max={getattr(self, '_sim_pastdated_gap_max', 0.0):.0f} "
@@ -543,29 +793,117 @@ class TopAggregator(SyncTopAgg):
                 f"known_delay_n={len(self._sim_known_delay_s)} "
                 f"dup_buffer_adds={getattr(self, '_sim_dupadd', 0)}"
             )
-        # recv_fifo marks every delivered end RECVD, but we only COMMITTED the
-        # popped one — the rest are buffered yet still in-flight. _handle_recv_state
-        # strips RECVD ends from selected_ends (freeing their concurrency slot),
-        # which would let the selector over-select to N. Reset the still-buffered
-        # ends back to NONE so they keep their in-flight slot until they commit;
-        # to_probe already skips them via _sim_buffer.has(), so they aren't re-recv'd.
-        for _buf_end in self._sim_buffer.pending_ends():
-            if channel.has(_buf_end):
-                channel._ends[_buf_end].set_property(KEY_END_STATE, VAL_END_STATE_NONE)
+        self._sim_keep_buffered_slots(channel)
+        # FX-D12: a buffered end was reset to NONE; committed, it must leave RECV.
+        if channel.has(_end):
+            channel._ends[_end].set_property(KEY_END_STATE, VAL_END_STATE_RECVD)
         # Release trainer that was blocked waiting for this cross-round commit.
         # Free its concurrency slot too (selected_ends), now that it committed,
         # so the next selection can refill it — the slot was held since round end.
         if _end in self._sim_pending_commit:
             self._sim_pending_commit.discard(_end)
             sel = channel._selector
-            if _end in sel.all_selected:
+            # FX-N46: like real, ingest frees the slot; identity (all_selected) waits for the agg-goal cleanup.
+            if not getattr(self, "_sim_identity_until_aggregate", True) and _end in sel.all_selected:
                 del sel.all_selected[_end]
             if sel.requester in sel.selected_ends:
                 sel.selected_ends[sel.requester].discard(_end)
-            if channel.has(_end):
+            if channel.has(_end) and not getattr(self, "_sim_identity_until_aggregate", True):
                 channel._ends[_end].set_property(KEY_END_STATE, VAL_END_STATE_NONE)
             logger.info(f"[SIM_PENDING_COMMIT] released {_end[-4:]} sct={sct:.1f}")
         return m, md
+
+    def _sim_keep_buffered_slots(self, channel) -> None:
+        """A buffered end is still in flight: NONE, not RECVD, so FX-D24 keeps its slot until commit (FX-D137)."""
+        for _buf_end in self._sim_buffer.pending_ends():
+            if channel.has(_buf_end):
+                channel._ends[_buf_end].set_property(KEY_END_STATE, VAL_END_STATE_NONE)
+
+    def _real_drain_recv(self, channel, recv_ends):
+        """FX-N18: streamer-free twin of ``next(recv_fifo(recv_ends, 1))``; pops the
+        earliest-arrival update from a persistent drain_ready buffer."""
+        pending = self._real_drain_pending
+        deadline = min(time.time() + RECV_TIMEOUT_WAIT_S, self._real_budget_end_wall())
+        _reclaim = self._next_reclaim_wall(channel)
+        if _reclaim is not None:  # FX-D50: wake at the selector's reclaim
+            deadline = min(deadline, max(time.time(), _reclaim) + 0.01)
+
+        def _buffer(drained):
+            for msg, md in drained:
+                if not msg:  # leave notification
+                    continue
+                self._real_recv_seq += 1
+                pending.append((md[1], self._real_recv_seq, (msg, md)))
+
+        _buffer(channel.drain_ready(recv_ends, timeout=0))
+        while not pending and recv_ends:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                break
+            _buffer(channel.drain_ready(recv_ends, timeout=remaining))
+        if not pending:
+            return None, ("", datetime.now())
+        pending.sort(key=lambda x: (x[0] is None, x[0] or 0, x[1]))
+        _, _, (msg, md) = pending.pop(0)
+        if channel.has(md[0]):  # FX-D12: a buffered end was reset to NONE
+            channel._ends[md[0]].set_property(KEY_END_STATE, VAL_END_STATE_RECVD)
+        # L4: drain_ready marked every pulled end RECVD; a still-buffered one keeps its slot.
+        for _, _, (_, (_e, _)) in pending:
+            if channel.has(_e):
+                channel._ends[_e].set_property(KEY_END_STATE, VAL_END_STATE_NONE)
+        return msg, md
+
+    def _real_budget_end_wall(self) -> float:
+        """Real: wall ts at which max_experiment_runtime_s runs out (inf if unset)."""
+        hp = getattr(getattr(self, "config", None), "hyperparameters", None)
+        max_rt, start = getattr(hp, "max_experiment_runtime_s", None), getattr(self, "agg_start_time_ts", None)
+        return start + float(max_rt) if max_rt and start is not None else math.inf
+
+    def _real_budget_spent(self) -> bool:
+        """FX-D93: a version waiting on late updates must still stop at the budget, not at its next commit."""
+        if self.simulated or time.time() < self._real_budget_end_wall():
+            return False
+        logger.info(f"max_experiment_runtime_s reached while waiting at round {self._round}; stopping run.")
+        self._work_done = True
+        return True
+
+    def _next_reclaim_wall(self, channel):
+        """Real: wall ts of the earliest pending selector timeout reclaim (dispatch + send_timeout_wait_s), else None."""
+        hp = getattr(getattr(self, "config", None), "hyperparameters", None)
+        if str(getattr(hp, "real_wake_at_timeout", True)).lower() != "true":
+            return None
+        sel = getattr(channel, "_selector", None)
+        to = getattr(sel, "send_timeout_wait_s", None)
+        skip = getattr(sel, "ordered_updates_recv_ends", ())
+        sent = [t for e, t in dict(getattr(sel, "all_selected", {}) or {}).items() if e not in skip]
+        if not sent or not to:
+            return None
+        # FX-D60: stamps are on the selector's abandon clock (avail clock once a select saw vclock_now), not epoch.
+        now = self._avail_now() if getattr(sel, "_sim_now_s", None) is not None else time.time()
+        due = [t + float(to) - now for t in sent if t + float(to) > now]  # a past-due one is reclaimed by the next select
+        return time.time() + min(due) if due else None
+
+    def _with_arrived_ends(self, channel, recv_ends) -> list:
+        """FX-L27 (real): also read ends whose update arrived or is still owed, e.g. an abandoned end's late one."""
+        recv_ends = list(recv_ends or [])
+        extra = (channel.ends_with_pending_rx() | self._owed_ends(channel)) - set(recv_ends)
+        return recv_ends + sorted(e for e in extra if channel.has(e))
+
+    def _keep_newer_dispatch_inflight(self, channel, end, recv_version) -> None:
+        """FX-L27: a late update from an older dispatch doesn't answer the end's newer one; keep it in flight."""
+        if self.simulated or not channel.has(end):
+            return
+        sent = self._track_trainer_version_duration_s[end]["sent_wts_version_ts"]
+        if recv_version in sent and max(sent.values()) > sent[recv_version]:  # trainers reply FIFO
+            channel._ends[end].set_property(KEY_END_STATE, VAL_END_STATE_NONE)
+            logger.info(f"[LATE_UPDATE] end={end[-4:]} version={recv_version}: newer dispatch still in flight")
+
+    def _prune_version_ledger(self, end, version) -> None:
+        """FX-N77: replies are FIFO, so versions older than a received one never arrive; keep the ledger bounded."""
+        led = self._track_trainer_version_duration_s[end]
+        for key in ("sent_wts_version_ts", "recv_wts_version_ts"):
+            for v in [v for v in led[key] if v < version]:
+                del led[key][v]
 
     def _aggregate_weights(self, tag: str) -> None:
         """Aggregate local model weights asynchronously.
@@ -578,21 +916,42 @@ class TopAggregator(SyncTopAgg):
         if not channel:
             logger.debug("No channel found")
             return
+        if self._real_budget_spent():
+            return
+        _at = agg_timing(self)
+        _at.begin()
+        _arrivals = getattr(channel, "arrival_seq", 0)  # FX-N77: an idle pass waits for a delivery after this
 
         # Filter to live ends; drop ghosts that left after selection to avoid
         # blocking recv_fifo on an empty queue.
         recv_ends = channel.ends(VAL_CH_STATE_RECV)
         if recv_ends:
             recv_ends = [e for e in recv_ends if channel.has(e)]
+        if not self.simulated:
+            recv_ends = self._with_arrived_ends(channel, recv_ends)
+        if self.simulated and recv_ends:  # FX-N56: a held pick's update is in the delivery ledger, not the channel
+            recv_ends = [e for e in recv_ends if e not in self._withheld_slot_held]
+        if self.simulated:
+            self._sim_ingest_evicted_updates(channel)
+        if not recv_ends and self.simulated and getattr(self, "_sim_reinject_when_idle", True):
+            self._sim_reinject_ready_withheld()  # FX-N54
         if not recv_ends:
             if self.simulated and len(self._sim_buffer) > 0:
                 recv_ends = []  # buffer still has entries to drain — don't block
+            elif not self.simulated and getattr(self, "_real_drain_pending", None):
+                recv_ends = []
             else:
                 logger.debug(f"[AGG_RECV] no live recv ends (round={self._round}); skipping")
                 # F.2: in sim, advance vclock to next availability event instead of
                 # wall-sleeping — covers felix and fedbuff asyncfl starvation paths.
                 if self.simulated and self.trainer_event_dict is not None:
                     _nxt = self._next_avail_vclock()
+                    # FX-N56: a held pick's 90s timeout frees its slot, so it is a wake-up too (FX-L25).
+                    _sst = [self._avail_send_ts(channel, e) for e in self._withheld_slot_held]
+                    _to = self._task_timeout_s()
+                    _exp = [t + _to + 1e-6 for t in _sst if t is not None and t + _to >= self._vclock.now]
+                    if _exp:
+                        _nxt = min(_exp) if _nxt is None else min(_nxt, min(_exp))
                     _budget = float(
                         getattr(self.config.hyperparameters, "max_experiment_runtime_s", float("inf"))
                     )
@@ -622,14 +981,18 @@ class TopAggregator(SyncTopAgg):
                                 f"stopping run."
                             )
                             return
-                    time.sleep(0.5)
+                    wait_arrival(channel, _arrivals, 0.5)
                 return
+        _t_recv = time.time()
         if self.simulated:
             msg, metadata = self._sim_recv_min(channel, recv_ends)
+        elif getattr(self, "_real_drain_ready_ingest", False):
+            msg, metadata = self._real_drain_recv(channel, recv_ends)
         else:
             msg, metadata = next(
                 channel.recv_fifo(recv_ends, 1, timeout=RECV_TIMEOUT_WAIT_S)
             )
+        _at.add_recv(time.time() - _t_recv)
         end, _ = metadata
         if not msg:
             logger.debug(f"[AGG_RECV] No data from {end}; skipping it, agg_model_version={self._round}")
@@ -637,7 +1000,9 @@ class TopAggregator(SyncTopAgg):
         # T3.3 commit-checkpoint belief (real mode only — sim's own commit
         # loop already recorded it inside _sim_withhold_if_unavail).
         if not self.simulated:
+            self._note_real_receipt(end)
             self._record_commit_belief(end)
+            self.commit_withheld(end)  # an evicted/abandoned trainer's late update arrived
         _t_msg_start = datetime.now()  # start of per-message processing (vii)
 
         # NOTE: Only 2 types of messages are expected here: (i) model
@@ -658,15 +1023,20 @@ class TopAggregator(SyncTopAgg):
                 f"agg_current_version={self._round}"
             )
 
-            if end in self._agg_cycle_contributed_ends:
+            if not hasattr(self, "_contributed_versions"):  # bare-init guard (tests)
+                self._contributed_versions = set()
+            if (end, msg[MessageType.MODEL_VERSION]) in self._contributed_versions:
                 logger.info(
-                    f"Duplicate contribution from {end} for agg cycle "
-                    f"round={self._round} (agg_goal_cnt={self._agg_goal_cnt}); "
+                    f"Duplicate contribution from {end} for model_version="
+                    f"{msg[MessageType.MODEL_VERSION]} (round={self._round}, "
+                    f"agg_goal_cnt={self._agg_goal_cnt}); "
                     f"ignoring."
                 )
                 channel.cleanup_provided_ends(end)
                 return
 
+            if msg.get(MessageType.VAL_PROBE):  # FX-N127 V2 (a): the held-out report piggybacked on a train task
+                self._ingest_val_report(end, msg, "train")
             channel.set_end_property(
                 end, PROP_LAST_SELECTED_ROUND, msg[MessageType.MODEL_VERSION]
             )
@@ -674,6 +1044,8 @@ class TopAggregator(SyncTopAgg):
             channel.set_end_property(
                 end, PROP_LAST_EVAL_ROUND, msg[MessageType.MODEL_VERSION]
             )
+            channel.set_end_property(end, PROP_LAST_REPORT_UPDATES, getattr(self, "_n_updates", 0))
+            channel.set_end_property(end, PROP_LAST_REPORT_TS, self._avail_now())
             round_start_time_tup = channel.get_end_property(end, PROP_ROUND_START_TIME)
             end = metadata[0]
             timestamp = metadata[1]
@@ -686,6 +1058,8 @@ class TopAggregator(SyncTopAgg):
 
         # Case #2: Message after task_to_perform=EVAL
         elif MessageType.STAT_UTILITY in msg:
+            if msg.get(MessageType.VAL_PROBE):  # F42c: held-out (nll sum, correct, n) of the model this end received
+                self._ingest_val_report(end, msg, "eval")
             logger.debug(
                 f"[AGG_RECV_EVAL] received eval message from {end}, "
                 f"with stat_utility={msg[MessageType.STAT_UTILITY]}, "
@@ -701,6 +1075,9 @@ class TopAggregator(SyncTopAgg):
             channel.set_end_property(
                 end, PROP_LAST_EVAL_ROUND, msg[MessageType.MODEL_VERSION]
             )
+            channel.set_end_property(end, PROP_LAST_REPORT_UPDATES, getattr(self, "_n_updates", 0))
+            channel.set_end_property(end, PROP_LAST_REPORT_TS, self._avail_now())
+            channel.set_end_property(end, PROP_LAST_PROBE_TS, self._avail_now())
 
             _sat_idx = msg.get(MessageType.SATELLITE_INDEX)
             if _sat_idx is not None:
@@ -716,7 +1093,7 @@ class TopAggregator(SyncTopAgg):
                 channel._selector.trainer_eval_recv_ends.append(end)
                 logger.debug(
                     f"After appending {end} to trainer_eval_recv_ends: "
-                    f"{channel._selector.trainer_eval_recv_ends}"
+                    f"{len(channel._selector.trainer_eval_recv_ends)} ends"
                 )
 
             # Remove end from selected_ends and set its state to none
@@ -725,8 +1102,12 @@ class TopAggregator(SyncTopAgg):
                 f"Eval done, will remove end {end} from selected_ends and all_selected "
                 f"to allow re-selection in same round for train"
             )
-            channel._selector.remove_from_selected_ends(channel._ends, end)
-            channel._selector._cleanup_removed_ends(end)
+            if (getattr(self, "_last_task_sent", None) or {}).get(end) == "train":
+                # FX-N38: a train sent after this eval is still in flight (replies are FIFO); keep the end busy.
+                logger.info(f"[LATE_EVAL] end={end[-4:]} version={msg[MessageType.MODEL_VERSION]}: newer train in flight")
+            else:
+                channel._selector.remove_from_selected_ends(channel._ends, end)
+                channel._selector._cleanup_removed_ends(end)
 
             # Eval-commit timeliness telemetry (mirror of the train branch below):
             # an eval task must commit at its OWN modeled completion, not a stale
@@ -767,7 +1148,7 @@ class TopAggregator(SyncTopAgg):
         # Else, throw an error and return
         else:
             logger.error(
-                f"Invalid message received from {end} in aggregate_weights: {msg}"
+                f"Invalid message received from {end} in aggregate_weights: keys={list(msg)}"
             )
             return
 
@@ -837,6 +1218,8 @@ class TopAggregator(SyncTopAgg):
                 self._track_trainer_version_duration_s[end]["recv_wts_version_ts"][
                     recv_wts_version
                 ] = recv_wts_ts
+                self._keep_newer_dispatch_inflight(channel, end, recv_wts_version)
+                self._prune_version_ledger(end, recv_wts_version)
 
                 wall_lag_s = (recv_wts_ts - sent_wts_ts).total_seconds()
                 logger.info(
@@ -975,7 +1358,7 @@ class TopAggregator(SyncTopAgg):
                 ] = new_cumulative_training_s
                 logger.debug(
                     f"Updated training time record for {end}, details: "
-                    f"{self._track_trainer_version_duration_s[end]}"
+                    f"{self._track_trainer_version_duration_s[end]['total_training_time_s']:.1f}s total"
                 )
 
                 # Following the relaxation in asyncFL to not check for
@@ -1004,8 +1387,13 @@ class TopAggregator(SyncTopAgg):
         # the tensor from WEIGHTS_BYTES (only paid for this committed update);
         # default None so an eval-only/malformed message can't UnboundLocalError.
         weights = None
-        if materialize_weights(msg) is not None:
+        if materialize_weights(msg, model_device(self.model)) is not None:
             weights = weights_to_model_device(msg[MessageType.WEIGHTS], self.model)
+        _why = nonfinite_reason(msg, weights, nonfinite_hp(self))
+        if _why:  # FX-D111
+            nonfinite_reject(end, _why, self._round, msg.get(MessageType.MODEL_VERSION))
+            weights = None
+            msg.pop(MessageType.STAT_UTILITY, None)
 
         if MessageType.DATASET_SIZE in msg:
             count = msg[MessageType.DATASET_SIZE]
@@ -1050,9 +1438,21 @@ class TopAggregator(SyncTopAgg):
             weights is not None and count > 0
         ):  # SC_TS: count = 0 means no data (it was trained on!), so ignore!
             tres = TrainResult(weights, count, version, stat_utility)
+            if getattr(self, "_phase", None) is not None and stat_utility and count:
+                self._phase.add(float(stat_utility) / count)  # F46: per-sample rms loss of the received model
+            if getattr(self, "_dkc_stats", None) is not None:
+                from flame.optimizer.bn_buffers import is_bn_stat
+                from flame.selector.update_stats import flatten
+                self._dkc_stats.add(flatten(weights, is_bn_stat), staleness=self._round - version)
+                if stat_utility and count:  # per-sample rms loss (I9: of the received model)
+                    self._dkc_losses = getattr(self, "_dkc_losses", [])
+                    self._dkc_losses.append(float(stat_utility) / count)
+                    self._dkc_client_losses = getattr(self, "_dkc_client_losses", [])
+                    self._dkc_client_losses.append((end, float(stat_utility) / count))  # Q-AIMD paired signal
             _cs0 = time.time()
             self.cache[end] = tres   # in-memory (MemCache)
             self._agg_cycle_contributed_ends.add(end)
+            self._contributed_versions.add((end, version))
             self._agg_cache_store_s = time.time() - _cs0
             logger.debug(f"received {len(self.cache)} trainer updates in cache")
             update_staleness_val = self._round - tres.version
@@ -1166,6 +1566,7 @@ class TopAggregator(SyncTopAgg):
             )
             # increment agg goal count
             self._agg_goal_cnt += 1
+            _at.add_ingest((datetime.now() - _t_msg_start).total_seconds())
 
         if self._agg_goal_cnt < self._agg_goal:
             logger.debug(
@@ -1191,27 +1592,32 @@ class TopAggregator(SyncTopAgg):
                     not in self._trainer_participation_in_round_count.keys()
                 ):
                     self._trainer_participation_in_round_count[trainer_update] = 1
-                    self._trainer_participation_in_round[trainer_update] = [
-                        0
-                    ] * 20000  # assuming max 20K rounds
-                    self._trainer_participation_in_round[trainer_update][
-                        self._round - 1
-                    ] = 1
+                    # rounds this trainer contributed to; a set, no round cap (F45 s3v crashed at 20000)
+                    self._trainer_participation_in_round[trainer_update] = {self._round - 1}
                 else:
                     self._trainer_participation_in_round_count[trainer_update] += 1
-                    self._trainer_participation_in_round[trainer_update][
-                        self._round - 1
-                    ] = 1
+                    self._trainer_participation_in_round[trainer_update].add(self._round - 1)
 
+        _t_commit = time.time()
+        if getattr(self, "_phase", None) is not None and getattr(self.optimizer, "phase_step", False):
+            self.optimizer.step_scale = self._phase.phi
         self.weights = self.optimizer.scale_add_agg_weights(
             self.weights, self._agg_goal_weights, self._agg_goal
         )
+        self._dispatch_payload = None  # FX-D42: weights mutate in place
 
         # update model with global weights
         self._update_model()
 
         # decrement counter since updates consumed from queue
         self._updates_in_queue -= self._agg_goal
+        self._n_updates = getattr(self, "_n_updates", 0) + self._agg_goal
+        channel.set_property("n_updates", self._n_updates)  # FX-N109 I8: the eval gate's clock
+        if not hasattr(self, "_version_updates"):
+            self._version_updates = {}
+        self._version_updates[self._round + 1] = (self._n_updates, self._avail_now())  # FX-N127: version v+1's updates, birth
+        if getattr(self, "_dkc_stats", None) is not None:
+            self._dynamic_kc_step(channel)
 
         logger.debug(
             f"====== aggregation finished for round {self._round}, "
@@ -1268,70 +1674,7 @@ class TopAggregator(SyncTopAgg):
 
         if self.simulated:
             self._sim_hold_busy_slots(channel)
-
-    def _trace_read_avail_check(self, end: str) -> bool:
-        logger.debug("In _trace_read_avail_check")
-
-        picked_trainer_is_available = True
-
-        if end in self.trainer_unavail_durations.keys():
-            # aggregator seconds from start, on the trace's timeline: virtual
-            # clock in simulated mode (wall-clock would barely advance vs the
-            # sim timeline, so every unavailability window would be missed),
-            # wall-clock in real mode. Mirrors the trainer-side _sim_now() path.
-            agg_time_since_start_s = (
-                self._vclock.now if self.simulated
-                else time.time() - self.agg_start_time_ts
-            )
-
-            curr_trainer_unavail_list = self.trainer_unavail_durations[end]
-
-            # iterate through unavailability list First, check if the
-            # current time is within any failure window
-
-            for start_time, duration in curr_trainer_unavail_list:
-                if start_time <= agg_time_since_start_s < start_time + duration:
-                    logger.debug(
-                        f"### Trainer {end} attempted to be picked in failed " f"state."
-                    )
-                    picked_trainer_is_available = False
-                    return picked_trainer_is_available
-                else:
-                    logger.debug(f"### Trainer {end} is available.")
-                    picked_trainer_is_available = True
-
-            # Remove entries that occurred in the past
-            updated_trainer_unavail_list = [
-                (start_time, duration)
-                for start_time, duration in curr_trainer_unavail_list
-                if (start_time + duration) >= agg_time_since_start_s
-            ]
-
-            # Remove end from trainer_unavail_durations if list is
-            # empty TODO: Check if deletion is happening properly
-            if len(updated_trainer_unavail_list) == 0:
-                logger.info(
-                    f"### Trainer {end} will no longer fail, removing from "
-                    f"trainer_unavail_durations"
-                )
-                del self.trainer_unavail_durations[end]
-            else:
-                self.trainer_unavail_durations[end] = updated_trainer_unavail_list
-        else:
-            logger.debug(
-                f"No info on end {end} in self.trainer_unavail_durations"
-                f", returning TRUE (default)"
-            )
-        return picked_trainer_is_available
-
-    def check_trainer_availability(self, end: str) -> bool:
-        picked_trainer_is_available = True
-        if self.track_trainer_avail["enabled"] == "False":
-            return True
-        elif self.track_trainer_avail["type"] == "ORACULAR":
-            picked_trainer_is_available = self._trace_read_avail_check(end)
-
-        return picked_trainer_is_available
+        _at.emit(self._round, time.time() - _t_commit, self.simulated, getattr(self, "vclock_now", None))
 
     def _pop_free_slot_ts(self, round_now):
         """Oldest freed-slot vclock (FIFO) to stamp a re-dispatch, else round_now.
@@ -1370,6 +1713,20 @@ class TopAggregator(SyncTopAgg):
         held = pending_in_buffer
         if self._inflight_residence:
             held = pending_in_buffer | set(self._sim_inflight_expected)
+            held |= self._sim_cold_start_busy()  # first-contact ends are busy too
+        # FX-D76: a late delivery doesn't retake its freed slot
+        held -= set(getattr(self, "_sim_withheld_delivering", ())) | set(getattr(self, "pending_withheld", ()))
+        if getattr(self, "_sim_hold_delivering_slot", True):  # FX-D90: a held slot frees at its delivery's commit
+            held |= self._sim_delivering_held & pending_in_buffer
+        held |= self._withheld_slot_held  # FX-N56: freed by _abandon_stalled at dispatch+90s
+        busy = getattr(self, "_sim_busy_until", None)
+        if busy:  # FX-N157: busy until its sct, not its early commit
+            now = self._vclock.now
+            for e in [e for e, t in busy.items() if t <= now]:
+                del busy[e]
+            held |= set(busy)
+        if harness.injected("no_busy_hold"):
+            held = set()
 
         # Release trainers no longer busy (committed, or — residence off — dispatched
         # with no buffer entry yet); they refill next round's fill pass.
@@ -1415,9 +1772,9 @@ class TopAggregator(SyncTopAgg):
         # Sim-only: real mode already has a native wall-clock abandon in the
         # selector itself (SEND_TIMEOUT_WAIT_S), so this would be redundant there.
         if self.simulated:
-            self._sim_abandon_stalled(channel)
+            self._abandon_stalled(channel)
         # D.1: for proactive_inflight_evict baselines (felix only), free any
-        # in-flight slot the trace now shows as UN_AVL -- no 90s wait. Both modes:
+        # in-flight slot the trace shows can't deliver (UN_AVL; AVL_EVAL for train, FX-D165) -- no 90s wait. Both modes:
         # trace-read eviction has no real-mode equivalent (unlike the abandon
         # above), so gating it sim-only left real-mode felix runs with no way to
         # drop a stalled UN_AVL trainer from recv_ends, hanging forever once
@@ -1431,15 +1788,20 @@ class TopAggregator(SyncTopAgg):
             curr_unavail_trainer_list = self.get_curr_task_ineligible_trainers(
                 task_to_perform
             )
+            _state_ineligible = set(curr_unavail_trainer_list)  # R27: knowledge-based only (EV22 reads its stamp)
             # invariant 2: a trainer with a withheld update stays out of the
             # eligible pool until its delivery_ts (§4.5 residence, sct→delivery_ts).
-            _held_withheld = self.withheld_held_ends()
+            if self._withheld_slot_held and channel._selector is not None:  # FX-N56: a selector timeout freed it
+                self._withheld_slot_held.intersection_update(getattr(channel._selector, "all_selected", {}) or {})
+            _wh, _ow = self.withheld_held_ends(), self.real_owed_held_ends(channel)
+            _held_withheld = _wh | _ow
             if _held_withheld:
                 curr_unavail_trainer_list = list(
                     set(curr_unavail_trainer_list) | _held_withheld
                 )
         else:
             curr_unavail_trainer_list = []
+            _wh = _ow = _state_ineligible = set()
 
         # exclude ends in their post-commit cooldown (until vclock >= sct + gap);
         # prune expired entries.
@@ -1476,11 +1838,18 @@ class TopAggregator(SyncTopAgg):
         # just evicted) so emit_selection's avail_composition/per_trainer reflect
         # the oracular read instead of staying all-UNKNOWN.
         self._avail_stamp_end_states(channel)
+        if self.trainer_event_dict is not None and channel._selector is not None:
+            # FX-N55, R27: an unaware baseline must not select on the stamp.
+            channel._selector.filter_by_avl_state = self.avail_select_filter
+        self._stamp_exclusions(channel, task_to_perform, withheld=_wh, owed=_ow, unavail=_state_ineligible,
+                               cooling=set(curr_unavail_trainer_list) - _state_ineligible - _wh - _ow)
 
         # Expose current availability-timeline time to selector so it can attach
         # it to selection events. _avail_now() covers both modes — real used to
         # be skipped here (see syncfl/top_aggregator.py for the parity fallout).
         channel.properties["vclock_now"] = self._avail_now()
+        channel.properties["agg_round"] = self._round  # FX-D96: selector abandon events cite the round
+        channel.properties["time_mode"] = "sim" if self.simulated else "real"
 
         # Per-baseline online oracle: refresh candidate stat-utility to true values
         # before selection. No-op unless oracle_utility_injection is enabled.
@@ -1490,23 +1859,20 @@ class TopAggregator(SyncTopAgg):
         # cifar10 has no intra-round iteration axis). No trainer_version_keys
         # passed, so the selector's no-repeat guard stays inert, as before.
         ends = channel.ends(VAL_CH_STATE_SEND, task_to_perform,
-                            agg_version_key=self.version_key)
+                            agg_version_key=self.version_key,
+                            trainer_version_keys=self._task_version_keys(channel, task_to_perform))
+        self.checkin_after_select(channel, ends, task_to_perform)  # F42-T1
         if not ends:
             logger.debug(f"No trainers found for tag {tag}")
             return
 
-        # Filter to ends we actually dispatch to (skip already-sent-this-round).
+        # Same-version re-tasking is excluded at selection (FX-D9); a post-selection skip here
+        # would leave the selector holding a slot nothing was sent to.
         _send_ends = []
         for end in list(ends):
             if end in self._track_trainer_version_duration_s:
                 sent_versions = self._track_trainer_version_duration_s[end]["sent_wts_version_ts"]
                 recv_versions = self._track_trainer_version_duration_s[end]["recv_wts_version_ts"]
-                if self._round in sent_versions and self._round not in recv_versions:
-                    logger.warning(
-                        f"[SELECTION_CHECK] Skipping {end}: already sent model_version={self._round} "
-                        f"but no response received yet."
-                    )
-                    continue
                 unreturned = [v for v in sent_versions if v not in recv_versions]
                 if unreturned:
                     logger.warning(
@@ -1514,7 +1880,7 @@ class TopAggregator(SyncTopAgg):
                     )
             _send_ends.append(end)
 
-        _round_now = getattr(self, "vclock_now", None)
+        _round_now = self._sim_send_stamp()
         # Event-driven re-dispatch: stagger each TRAIN dispatch by the vclock at
         # which its slot freed (a prior commit), so the round-boundary cohort no
         # longer collapses to one frozen frontier. Off / eval / real ⇒ one shared
@@ -1536,7 +1902,6 @@ class TopAggregator(SyncTopAgg):
         # carries its own SIM_SEND_TS so the payload must be rebuilt per end — sim
         # weights are small and dwarfed by the real GPU compute these runs do).
         base_msg = {
-            MessageType.WEIGHTS: weights_to_device(self.weights, DeviceType.CPU),
             MessageType.ROUND: self._round,
             MessageType.MODEL_VERSION: self._round,
             MessageType.TASK_TO_PERFORM: task_to_perform,
@@ -1550,7 +1915,18 @@ class TopAggregator(SyncTopAgg):
                 # wall-clock availability lookups anchor to the SAME point the
                 # aggregator uses.
                 base_msg[MessageType.AGG_START_TS] = self.agg_start_time_ts
-            _shared_payload = channel.dumps(base_msg)
+            # FX-D42: one pickle per (version, task, stamp), not per dispatch.
+            _key = (self._round, task_to_perform, base_msg.get(MessageType.SIM_SEND_TS),
+                    base_msg.get(MessageType.AGG_START_TS))
+            _cached = getattr(self, "_dispatch_payload", None)
+            if _cached is not None and _cached[0] == _key:
+                _shared_payload = _cached[1]
+            else:
+                base_msg[MessageType.WEIGHTS_BYTES] = pack_weights(self.weights)  # FX-N77
+                _shared_payload = channel.dumps(base_msg)
+                self._dispatch_payload = (_key, _shared_payload)
+        else:
+            base_msg[MessageType.WEIGHTS_BYTES] = pack_weights(self.weights)  # FX-N77
 
         _send_t0 = time.time()  # [DISTRIBUTE_TIMING]
         for end in _send_ends:
@@ -1560,14 +1936,22 @@ class TopAggregator(SyncTopAgg):
             channel.set_end_property(
                 end, PROP_ROUND_START_TIME, (self._round, datetime.now())
             )
+            self._record_task_dispatch(end, task_to_perform)
             if self.simulated:
                 _sst = _end_send_ts[end]
                 channel.set_end_property(end, PROP_SIM_SEND_TS, _sst)
                 # Expected completion = dispatch vclock + this end's own
                 # MODELED_DELAY_S. No fallback: unseen -> no gate entry.
                 _delay = self._sim_known_delay_s.get(end)
+                if _delay is not None and task_to_perform != "train" and getattr(self, "_sim_eval_expect_at_send", False):
+                    _delay = 0.0
                 if _delay is not None:
                     self._sim_inflight_expected[end] = _sst + _delay
+                # A new outstanding update: ingest it even if `end` committed earlier this cycle (FX-D6).
+                getattr(self, "_sim_committed", set()).discard(end)
+                if not hasattr(self, "_sim_dispatch_wall"):  # bare-init guard (tests)
+                    self._sim_dispatch_wall = {}
+                self._sim_dispatch_wall[end] = time.time()
                 if _staggered:
                     _m = dict(base_msg)
                     _m[MessageType.SIM_SEND_TS] = _sst
@@ -1636,7 +2020,7 @@ class TopAggregator(SyncTopAgg):
         loop = Loop(loop_check_fn=lambda: self._work_done)
         # create a loop object for asyncfl to manage concurrency as
         # well as aggregation goal
-        asyncfl_loop = Loop(loop_check_fn=lambda: self._agg_goal_cnt == self._agg_goal)
+        asyncfl_loop = Loop(loop_check_fn=self._async_inner_loop_done)
 
         # chain them again with new tasklets introduced in this class
         (
@@ -1657,6 +2041,12 @@ class TopAggregator(SyncTopAgg):
             >> c.tasklet("save_params")
             >> c.tasklet("save_model")
         )
+
+    def _async_inner_loop_done(self) -> bool:
+        """Inner loop exit: agg goal met, or the run is stopping (starvation stop, sim
+        wall ceiling) -- else a stop set mid-cycle spins until the goal (as fwdllm)."""
+        self._check_sim_wall_ceiling()
+        return self._agg_goal_cnt == self._agg_goal or self._work_done
 
     @classmethod
     def get_func_tags(cls) -> list[str]:
