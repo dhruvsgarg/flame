@@ -21,12 +21,14 @@ setup(
     # Core flame package deps. Example/test/dev deps live in extras.
     install_requires=[
         "aiostream",
+        "astropy",
         "boto3",
         "cloudpickle",
         "diskcache",
         "fedscale",
         "gpustat",
         "grpcio",
+        "itur",
         "mlflow",
         "numpy",
         "paho-mqtt",

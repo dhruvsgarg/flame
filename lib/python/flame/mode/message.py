@@ -111,3 +111,9 @@ class MessageType(Enum):
     SIM_FANOUT = 48          # sim: recipients in send order; a trainer's index picks its real-profiled download (FX-D191)
     VAL_PROBE = 49           # F42c eval probe: (nll sum, correct, n) of the received model on held-out samples
     CHECKIN_RECONNECT = 50   # F42-T1 real: {at, mu}: a rejected check-in's reconnect time and the server's round estimate
+    # This trainer's index into the shared satellite position file
+    # (flame.link), stamped so the aggregator can compute its own
+    # ground-station-side link budget for this trainer without a priori
+    # knowledge of the end_id -> satellite_index mapping (end_id carries no
+    # such information -- see flame.mode.horizontal.syncfl.top_aggregator).
+    SATELLITE_INDEX = 51
