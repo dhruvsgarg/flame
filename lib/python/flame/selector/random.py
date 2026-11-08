@@ -172,7 +172,7 @@ class RandomSelector(AbstractSelector):
 
             # update this in case clients timed out
             required_trainers = max(0, min(len(ends), self.c - len(trainers_in_use)))  # in-use > c must not crash sample()
-            required_trainers = min(required_trainers, kwargs.get("num_to_select", required_trainers))
+            required_trainers = min(required_trainers, kwargs.get("num_to_select") or required_trainers)
             logger.info(
                 f"Waiting on {trainers_in_use_cnt}, need {required_trainers} more to maintain concurrency {self.c}"
             )

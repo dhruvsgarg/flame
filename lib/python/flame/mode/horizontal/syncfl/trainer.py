@@ -191,6 +191,18 @@ class Trainer(Role, metaclass=ABCMeta):
         self.fetch_success = True
         return True
 
+    def _allow_model_reuse(self, msg):
+        return False
+
+    def _assignment_has_model(self, msg):
+        return True
+
+    def _on_training_assignment(self, msg):
+        pass
+
+    def _prepare_training_result(self, msg):
+        return msg
+
     def _fetch_weights(self, tag: str) -> None:
         logger.debug(
             f"### FETCH WEIGHTS start for tag: {tag}, "
@@ -271,7 +283,8 @@ class Trainer(Role, metaclass=ABCMeta):
         _covering = [_resp.get(t) for t in (("train", "eval") if _req_task == "eval" else (_req_task,))]
         _answered = max((v for v in _covering if v is not None), default=None)
         if (MessageType.EOT not in msg and _req_ver is not None and _answered is not None
-                and _req_ver <= _answered):
+                and _req_ver <= _answered
+                and not (_req_ver == _answered and self._allow_model_reuse(msg))):
             logger.info(
                 f"[TRAINER_TASK_DISCARD] trainer_id={self.trainer_id} task={_req_task} "
                 f"model_version={_req_ver} already answered up to {_answered}"
@@ -290,7 +303,7 @@ class Trainer(Role, metaclass=ABCMeta):
 
         if (MessageType.WEIGHTS in msg or MessageType.WEIGHTS_BYTES in msg) and getattr(self, "_checkin_client", None):
             self._checkin_client.on_task_start()  # F42-T1
-        if MessageType.WEIGHTS in msg or MessageType.WEIGHTS_BYTES in msg:
+        if (MessageType.WEIGHTS in msg or MessageType.WEIGHTS_BYTES in msg) and self._assignment_has_model(msg):
             # Load the model onto GPU if self.model is None:
             # self._load_model_onto_gpu()
 
@@ -359,6 +372,7 @@ class Trainer(Role, metaclass=ABCMeta):
         else:
             logger.debug(f"Didn't find TASK_TO_PERFORM in msg")
 
+        self._on_training_assignment(msg)
         self.fetch_success = True
 
         logger.info(
@@ -559,6 +573,7 @@ class Trainer(Role, metaclass=ABCMeta):
         msg[MessageType.WALL_SEND_TS] = _wall_send_ts
         msg[MessageType.SEND_GATE_WAIT_S] = float(self._phase_times.get("send_gate_wait_s", 0.0))
 
+        msg = self._prepare_training_result(msg)
         with self._phase("mqtt_send_s"):
             channel.send(end, msg)
 
