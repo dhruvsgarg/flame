@@ -122,11 +122,13 @@ def make_runtime(channel, goal, traces=None, budget=float('inf')):
     a.datasampler = SimpleNamespace(get_metadata=lambda r, ends: {})
     return a
 
-def test_n200_goal175_retains_exact_quorum_across_commits():
-    ch = Channel({f't{i:03}': (i + 1) / 10 for i in range(200)})
+@pytest.mark.parametrize("rounds", [6, 500])
+def test_n200_goal175_retains_exact_quorum_across_commits(rounds):
+    ch = Channel({f't{i:03}': float(i + 1) for i in range(200)})
     agg = make_runtime(ch, 175)
+    agg._rounds = rounds
     commits = 0
-    for _ in range(20):
+    for _ in range(10 * rounds):
         agg._distribute_weights('tag')
         agg._aggregate_weights('tag')
         if agg._round_committed:
@@ -135,7 +137,7 @@ def test_n200_goal175_retains_exact_quorum_across_commits():
         agg.increment_round()
         if agg._work_done:
             break
-    assert commits == 6 and agg._round == 7
+    assert commits == rounds and agg._round == rounds + 1
 
 def test_empty_selection_advances_to_recovery():
     ch = Channel({'a': 1.0, 'b': 2.0, 'c': 3.0})
@@ -176,3 +178,20 @@ def test_pending_physical_work_is_received_before_clock_jump():
     agg._distribute_weights('tag')
     agg._distribute_weights('tag')
     assert agg._vclock.now == 0 and (not agg._work_done)
+
+
+def test_rejected_response_releases_slot_for_a_different_trainer():
+    ch = Channel({"a": 1., "b": 1., "c": 1.})
+    ch._selector.c = 2
+    ch._selector._pyrng.sample = lambda population, k: sorted(population)[:k]
+    agg = make_runtime(ch, 2)
+    agg._distribute_weights("tag")
+    for end, msg in ch.pending:
+        if end == "a":
+            msg[M.WEIGHTS]["weight"].fill_(float("nan"))
+    agg._aggregate_weights("tag")
+    assert not agg._round_committed
+    agg._distribute_weights("tag")
+    assert set(ch.sent[:2]) == {"a", "b"} and ch.sent[2:] == ["c"]
+    agg._aggregate_weights("tag")
+    assert agg._round_committed and agg.optimizer.contributors == {"b", "c"}
