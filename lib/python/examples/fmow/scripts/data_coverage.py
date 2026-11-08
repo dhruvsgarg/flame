@@ -97,6 +97,10 @@ def main():
     with np.load(leo_dir / "captures.npz") as captures:
         events, offsets = captures["events"], captures["offsets"]
         names = captures["sat_names"]
+        capture_description = (
+            f"off_nadir_deg={float(captures['off_nadir_deg'])}"
+            if "off_nadir_deg" in captures else "saved events; capture geometry not recorded"
+        )
     with np.load(leo_dir / "geodetic.npz") as geo:
         orbit_times = geo["time_s"]
         if not np.array_equal(names, geo["sat_names"][:len(names)]):
@@ -125,7 +129,7 @@ def main():
     rows = list(coverage_rows(captured, reachable, checkpoints))
     print(f"Training images: {len(captured):,}; satellite indices: {indices.start}..{indices.stop - 1}")
     print(f"Connectivity: {source}")
-    print(f"Captures: {leo_dir / 'captures.npz'} (saved events; generation radius is not recorded)")
+    print(f"Captures: {leo_dir / 'captures.npz'} ({capture_description})")
     print("Run setup_fmow all with this config after changing capture or ground-station settings.")
     print("Reachable coverage is an upper bound: no selection, training duration, or aggregation is modeled.")
     print("Counts include events strictly before each elapsed-time boundary; input files are not modified.\n")

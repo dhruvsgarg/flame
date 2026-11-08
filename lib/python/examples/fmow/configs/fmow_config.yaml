@@ -7,7 +7,7 @@ satellites:
   leo_dir: lib/python/examples/fmow/metadata/leo
 
 capture:
-  radius: 15
+  off_nadir_deg: 30
 
 ground_stations:
   num_stations: 1
