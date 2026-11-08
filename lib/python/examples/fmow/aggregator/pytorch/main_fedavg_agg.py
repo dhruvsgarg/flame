@@ -176,10 +176,10 @@ class PyTorchFMoWAggregator(TopAggregator):
                             logger.info(f"[EVAL_PROGRESS] round={round_num} batch={i}/{total_batches} samples={total}")
                         
                 self._eval_emit(round_num, test_loss / total, correct / total)
-                self._eval_inflight = False
             except Exception as e:  # eval must never break training
                 logger.warning(f"[ASYNC_EVAL] failed (non-fatal): {e}")
-                self._eval_inflight = False
+            finally:
+                self._eval_release()
 
         if is_last_round:
             _job()
