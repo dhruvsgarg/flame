@@ -1,4 +1,5 @@
 import argparse
+import sys
 import numpy as np
 import yaml
 
@@ -6,6 +7,8 @@ from pathlib import Path
 
 EARTH_RADIUS_KM = 6371.0
 FMOW_DIR = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(FMOW_DIR.parent))
+from fmow.simulation.contacts import ContactSchedule
 METADATA_DIR = FMOW_DIR / "metadata"
 LEO_DIR = METADATA_DIR / "leo"
 OUTPUT_DIR = METADATA_DIR / "availability_traces" 
@@ -66,54 +69,52 @@ def convert_to_trace(
         events = events[1:]
     return events
 
-def generate_trace(
-    ground_stations: dict, sat_ecef: np.ndarray,
-    min_elevation: float, min_window: float
-) -> tuple[dict, dict]:
-    num_timesteps, num_satellites, _ = sat_ecef.shape
+def build_contact_schedule(ground_stations, sat_ecef, time_s, satellite_names, min_elevation):
+    visibility = {}
+    for name, station in ground_stations.items():
+        ecef = geo_to_ecef(station["lat"], station["lon"])
+        visibility[name] = elevation_angles_deg(ecef, sat_ecef) >= min_elevation
+    return ContactSchedule.from_visibility(time_s, satellite_names, visibility)
 
-    visible = np.zeros((num_timesteps, num_satellites), dtype=bool)
-    for station in ground_stations.values():
-        station["ecef"] = geo_to_ecef(station["lat"], station["lon"])
-        elevation = elevation_angles_deg(station["ecef"], sat_ecef)
-        station["visible"] = elevation >= min_elevation
-        visible |= find_satellite_events(station["visible"], min_window)
 
-    satellite_events = {}
-    for sat_idx in range(num_satellites):
-        satellite_events[sat_idx] = convert_to_trace(
-            visible[:, sat_idx],
-        )
-        
-    eligible_over_time = visible.sum(axis=1)
-    never_eligible = sum(
-        1 for events in satellite_events.values()
-        if not any(state == "AVL_TRAIN" for _, state in events)
-    )
-
+def project_schedule(schedule, time_s, min_window):
+    events = schedule.availability_events(min_window)
+    counts = np.zeros(len(time_s), dtype=int)
+    for trace in events.values():
+        for (start, state), (end, _) in zip(trace, trace[1:]):
+            if state == "AVL_TRAIN":
+                counts += (time_s >= start) & (time_s < end)
     stats = {
-        "num_satellites": num_satellites,
-        "eligible_min": int(eligible_over_time.min()),
-        "eligible_max": int(eligible_over_time.max()),
-        "eligible_mean": float(eligible_over_time.mean()),
-        "ghost_satellites": never_eligible
+        "num_satellites": len(schedule.satellite_names),
+        "eligible_min": int(counts.min()), "eligible_max": int(counts.max()),
+        "eligible_mean": float(counts.mean()),
+        "ghost_satellites": sum(not any(state == "AVL_TRAIN" for _, state in t) for t in events.values()),
     }
-    return satellite_events, stats
+    return events, stats
+
+
+def generate_trace(ground_stations, sat_ecef, min_elevation, min_window):
+    # Compatibility entrypoint for callers with one-second orbital samples.
+    times = np.arange(sat_ecef.shape[0], dtype=float)
+    schedule = build_contact_schedule(ground_stations, sat_ecef, times,
+                                      [str(i) for i in range(sat_ecef.shape[1])], min_elevation)
+    return project_schedule(schedule, times, min_window)
+
 
 def write_satellite_availability(
     gs_file: Path, ecef_path: Path, out_file: Path,
-    elevation_angle: float, min_window: float,
+    elevation_angle: float, min_window: float, contacts_path: Path | None = None,
 ) -> None:
     with open(gs_file) as f:
         gs_data = yaml.safe_load(f)
     ground_stations = gs_data["stations"]
 
     ecef = np.load(ecef_path)
-    sat_ecef, _ = ecef["ecef_km"], ecef["time_s"]
+    sat_ecef, time_s = ecef["ecef_km"], ecef["time_s"]
 
-    satellite_events, stats = generate_trace(
-        ground_stations, sat_ecef, elevation_angle, min_window
-    )
+    schedule = build_contact_schedule(ground_stations, sat_ecef, time_s, ecef["sat_names"], elevation_angle)
+    satellite_events, stats = project_schedule(schedule, time_s, min_window)
+    schedule.save(contacts_path or out_file.with_name("contact_schedule.npz"))
 
     print(f"Ground stations: {len(ground_stations)}, satellites: {stats['num_satellites']}")
     print(f"Eligible at once: min={stats['eligible_min']}, mean={stats['eligible_mean']}, max={stats['eligible_max']}")
