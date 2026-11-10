@@ -31,7 +31,7 @@ setup(
         "itur",
         "mlflow",
         "numpy",
-        "paho-mqtt",
+        "paho-mqtt>=2.2.0",
         "protobuf",
         "psutil",
         "pydantic",
