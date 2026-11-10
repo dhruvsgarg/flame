@@ -1,0 +1,60 @@
+# Run with python -m flame.launch.run_experiment followed by this file's path.
+# Uses the existing captures, registry and satellite availability from setup_fmow.
+# Optional satellite_link_provider settings use the same contract as sync FMoW.
+experiments:
+  - name: fmow_fedbuff_smoke_n10
+    description: "FMoW asyncfl/FedBuff smoke: 10 satellites, 5 updates per commit."
+    baseline: fedbuff
+
+    trainer:
+      num_trainers: 10
+      start_id: 1
+      time_mode: simulated
+      dataset:
+        path_style: true
+      availability:
+        mode: satellite
+      enable_training_delays: true
+      hyperparameters:
+        batchSize: 16
+        learningRate: 0.0001
+        fmow_config_path: "lib/python/examples/fmow/configs/fmow_config.yaml"
+
+    aggregator:
+      config_template: metadata/aggregator_base.json
+      selector: fedbuff
+      tracking_mode: default
+      agg_goal: 5
+      log_to_wandb: false
+      config_overrides:
+        job:
+          id: fmow_fedbuff_smoke_n10
+          name: fmow
+        hyperparameters:
+          batchSize: 16
+          learningRate: 0.0001
+          rounds: 50
+          max_experiment_runtime_s: 10800
+          fmow_config_path: "lib/python/examples/fmow/configs/fmow_config.yaml"
+          eval_every_n_rounds: 10
+          sim_unavailability: 'True'
+          availability_trace: satellite
+          min_trainers_to_start: 10
+          min_trainers_join_timeout_s: 600
+          trainer_recv_wall_timeout_s: 600
+        selector:
+          kwargs:
+            c: 10
+        optimizer:
+          kwargs:
+            dataset_name: fmow
+            learning_rate: 1.0
+            agg_rate_conf:
+              type: old
+
+    execution:
+      num_gpus: 2
+      sleep_between_spawns: 1.0
+      aggregator_warmup_time: 15
+      monitoring:
+        enabled: false
