@@ -31,7 +31,7 @@ from flame.channel import (
 )
 from flame.end import KEY_END_STATE, VAL_END_STATE_NONE, VAL_END_STATE_RECVD, End
 from flame.config import TrainerAvailState
-from flame.selector.properties import PROP_AVL_STATE
+from flame.selector.properties import PROP_AVL_STATE, PROP_SIM_COMPLETION_TS
 
 logger = logging.getLogger(__name__)
 SEND_TIMEOUT_WAIT_S = 90
@@ -141,6 +141,8 @@ class RandomSelector(AbstractSelector):
             # We use list() to avoid "dictionary changed size during iteration" errors
             current_time = time.time()
             for end_id in list(self.selected_ends):
+                if end_id in ends and ends[end_id].get_property(PROP_SIM_COMPLETION_TS) is not None:
+                    continue  # an assembled response still owns its simulated slot
                 if end_id in self.time_sent:
                     if (current_time - self.time_sent[end_id]) > SEND_TIMEOUT_WAIT_S:
                         logger.info(f"Moving {end_id} to stale_ends (Timeout).")
@@ -170,6 +172,7 @@ class RandomSelector(AbstractSelector):
 
             # update this in case clients timed out
             required_trainers = max(0, min(len(ends), self.c - len(trainers_in_use)))  # in-use > c must not crash sample()
+            required_trainers = min(required_trainers, kwargs.get("num_to_select", required_trainers))
             logger.info(
                 f"Waiting on {trainers_in_use_cnt}, need {required_trainers} more to maintain concurrency {self.c}"
             )

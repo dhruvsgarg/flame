@@ -640,6 +640,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         for end, sct, (msg, md) in all_popped:
             if sct > _cap:  # F42-T12 (d): the next check-in can open this version first; real's window timer won't wait
                 self._sim_sync_carry[end] = (sct, (msg, md))
+                channel.set_end_property(end, PROP_SIM_COMPLETION_TS, sct)
                 if end in _carried_wd:
                     self._sim_sync_carry_withheld.add(end)
                 continue
@@ -647,6 +648,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
                 n_k += self._sync_sim_commit_due_withheld(channel, sct, committed, first_k - n_k)
             if n_k >= first_k:
                 self._sim_sync_carry[end] = (sct, (msg, md))
+                channel.set_end_property(end, PROP_SIM_COMPLETION_TS, sct)
                 if end in _carried_wd:
                     self._sim_sync_carry_withheld.add(end)
                 continue
@@ -689,6 +691,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
                 # FX-D122: co-due deliveries past K carry; real's version closes at the K-th arrival.
                 # FX-D130: commits later as a withheld delivery; slot held until then.
                 self._sim_sync_carry[wend] = (wdts, (wmsg, wmd))
+                channel.set_end_property(wend, PROP_SIM_COMPLETION_TS, wdts)
                 self._sim_sync_carry_withheld.add(wend)
                 continue
             self._sync_sim_commit_withheld(channel, wend, wdts, wmsg, wmd, committed)
@@ -855,6 +858,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
                 self._note_real_receipt(end)
 
             logger.debug(f"received data from {end}")
+            channel.set_end_property(end, PROP_SIM_COMPLETION_TS, None)
             channel.set_end_property(end, PROP_ROUND_END_TIME, (round, timestamp))
             _sat_idx = msg.get(MessageType.SATELLITE_INDEX)
             if _sat_idx is not None:
@@ -1244,9 +1248,11 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
 
     def _sync_wait_k_plan(self, channel, num_eligible: int, threshold: int):
         """FX-N37: (picks, eligible needed to dispatch) for this version's missing slots; None when none are missing."""
-        desired = getattr(channel._selector, "num_of_ends", threshold)
+        desired = getattr(channel._selector, "num_of_ends", getattr(channel._selector, "c", threshold))
         fresh = self._sync_version_inflight(channel)
-        need = desired - len(fresh) - len(self._sync_accepted_ends())
+        # Older responses still holding a slot also consume concurrency.
+        occupied = self._avail_inflight_ends(channel) | fresh | self._sync_accepted_ends()
+        need = desired - len(occupied)
         if need <= 0 or (fresh and num_eligible == 0):
             return None
         if fresh or getattr(self.config.hyperparameters, "sync_partial_dispatch", False):  # mid-round, or FX-D148
@@ -1353,14 +1359,33 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
                 return
             _need, _threshold = _plan
 
-        if num_eligible < _threshold:
+        # Selection can also be empty when a selector cannot fill its own cohort.
+        selected_ends = []
+        if num_eligible >= _threshold:
+            # SEND state fills the selector's requested concurrency.
+            selected_ends = channel.ends(
+                VAL_CH_STATE_SEND, task_to_perform, agg_version_key=self.version_key,
+                trainer_version_keys=_version_keys, num_to_select=_need,
+            )
+            self.checkin_after_select(channel, selected_ends)  # F42-T1
+        if not selected_ends:
             if self.simulated and self.trainer_event_dict is not None:
+                answered = getattr(self, "_sim_answered_sst", {})
+                carry = getattr(self, "_sim_sync_carry", {})
+                held = self.withheld_held_ends()
+                if any(e not in carry and e not in held
+                       and answered.get(e) != self._avail_send_ts(channel, e)
+                       for e in self._avail_inflight_ends(channel)):
+                    return  # receive physical work before advancing simulated time
                 _nxt = self._sim_starvation_wake(channel)  # FX-D182
+                completions = [sct for sct, _ in carry.values() if sct > self._vclock.now]
+                if completions:
+                    _nxt = min(completions + ([_nxt] if _nxt is not None else []))
                 _budget = float(
                     getattr(self.config.hyperparameters, "max_experiment_runtime_s", float("inf"))
                 )
                 if _nxt is not None and _nxt > self._vclock.now and self._vclock.now < _budget:
-                    self._vclock.advance(_nxt)
+                    self._vclock.advance(min(_nxt, _budget))
                     self._abandon_stalled(channel)
                     curr_unavail_trainer_list = self.get_curr_task_ineligible_trainers(
                         task_to_perform
@@ -1407,17 +1432,7 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
                 time.sleep(0.5)
             return
 
-        # Threshold met — proceed with selection.
-        # SEND state: pick (new) trainers to send the model to. With a buffered
-        # selector (random) this fills concurrency; stateless selectors ignore
-        # the state and return their normal selection.
-        selected_ends = channel.ends(VAL_CH_STATE_SEND, task_to_perform,
-                                     agg_version_key=self.version_key,
-                                     trainer_version_keys=_version_keys,
-                                     num_to_select=_need)
-        self.checkin_after_select(channel, selected_ends)  # F42-T1
-        if not selected_ends:
-            return
+        # The selected cohort is ready for one shared model broadcast.
         datasampler_metadata = self.datasampler.get_metadata(self._round, selected_ends)
 
         # Same model goes to every recipient this round; build + serialize once.
