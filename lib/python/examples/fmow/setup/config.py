@@ -32,6 +32,7 @@ class GroundStationsConfig:
 @dataclass
 class AvailabilityConfig:
     trace_path: str = "lib/python/examples/fmow/metadata/availability_traces/satellite_traces.yaml"
+    contacts_path: str | None = None
 
 @dataclass
 class FMoWConfig:
@@ -46,6 +47,8 @@ class FMoWConfig:
         self.dataset.root_dir = str((_REPO_ROOT / Path(self.dataset.root_dir).expanduser()).resolve())
         self.satellites.leo_dir = str((_REPO_ROOT / Path(self.satellites.leo_dir).expanduser()).resolve())
         self.availability.trace_path = str((_REPO_ROOT / Path(self.availability.trace_path).expanduser()).resolve())
+        contacts_path = self.availability.contacts_path or str(Path(self.availability.trace_path).with_name("contact_schedule.npz"))
+        self.availability.contacts_path = str((_REPO_ROOT / Path(contacts_path).expanduser()).resolve())
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "FMoWConfig":

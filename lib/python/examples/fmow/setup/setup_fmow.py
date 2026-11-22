@@ -54,6 +54,7 @@ def main():
             write_satellite_availability(
                 gs_file, leo_dir / "ecef.npz", Path(config.availability.trace_path),
                 generation.elevation_angle, generation.min_window,
+                contacts_path=Path(config.availability.contacts_path),
             )
         else:
             print("[setup_fmow] No ground_stations settings; skipped trace generation")

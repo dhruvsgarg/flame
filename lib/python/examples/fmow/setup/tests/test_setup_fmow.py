@@ -33,6 +33,7 @@ class SetupFMoWTests(unittest.TestCase):
             self.leo / "ecef.npz",
             ecef_km=np.tile([[7000., 0., 0.], [-7000., 0., 0.]], (4, 1, 1)),
             time_s=np.arange(4),
+            sat_names=["sat0", "sat1"],
         )
 
     def run_setup(self, command="all"):
@@ -61,6 +62,10 @@ class SetupFMoWTests(unittest.TestCase):
             "trainer_001": [[0, "AVL_TRAIN"], [4, "UN_AVL"]],
             "trainer_002": [[0, "AVL_TRAIN"], [4, "UN_AVL"]],
         })
+        from fmow.simulation.contacts import ContactSchedule
+        contacts = ContactSchedule.load(self.trace.with_name("contact_schedule.npz"))
+        self.assertEqual(contacts.satellite_names, ("sat0", "sat1"))
+        self.assertEqual(contacts.horizon_s, 4)
 
     def test_omitted_generation_preserves_existing_files(self):
         station_path = self.leo / "ground_stations.yaml"
@@ -97,6 +102,7 @@ class SetupFMoWTests(unittest.TestCase):
         write_trace.assert_called_once_with(
             self.leo / "ground_stations.yaml", self.leo / "ecef.npz",
             Path(FMoWConfig().availability.trace_path), 10.0, 90.0,
+            contacts_path=Path(FMoWConfig().availability.contacts_path),
         )
 
     def test_paths_do_not_depend_on_working_directory(self):
