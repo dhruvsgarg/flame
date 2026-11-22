@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="294" viewBox="0 0 880 294" role="img" aria-labelledby="title desc">
+  <title id="title">FMoW working-model weights per GPU</title>
+  <desc id="desc">At 101.505 MiB per FP32 model, 25 models occupy 2.478 GiB and five models occupy 0.496 GiB. The reduction is 80 percent or 1.983 GiB per GPU. This excludes gradients, activations, contexts, caches, and aggregator allocations.</desc>
+  <rect width="880" height="294" fill="#fff"/>
+  <g font-family="Arial, sans-serif" fill="#172b4d">
+    <text x="28" y="32" font-size="21" font-weight="700">Fewer resident working models</text>
+    <text x="28" y="57" font-size="14">Calculated FP32 weights only, per GPU. Same model, fewer copies.</text>
+    <text x="28" y="102" font-size="15">Current: 25 models</text>
+    <rect x="230" y="80" width="475.81" height="34" fill="#52667a"/>
+    <text x="720" y="102" font-size="16">2.48 GiB</text>
+    <text x="28" y="158" font-size="15">Proposed: 5 models</text>
+    <rect x="230" y="136" width="95.16" height="34" fill="#167d8d"/>
+    <text x="340" y="158" font-size="16">0.50 GiB</text>
+    <path d="M230 188 H710" stroke="#c6cdd5" fill="none"/>
+    <g font-size="12" text-anchor="middle">
+      <text x="230" y="207">0</text><text x="326" y="207">0.5</text><text x="422" y="207">1.0</text>
+      <text x="518" y="207">1.5</text><text x="614" y="207">2.0</text><text x="710" y="207">2.5</text>
+    </g>
+    <text x="470" y="228" text-anchor="middle" font-size="13">Working-model weight storage (GiB)</text>
+    <text x="28" y="256" font-size="16" font-weight="700">1.98 GiB less per GPU; 15.86 GiB less across 8 GPUs</text>
+    <text x="28" y="280" font-size="12">Not total VRAM. Gradients, activations, contexts, and aggregator memory are additional.</text>
+  </g>
+</svg>
