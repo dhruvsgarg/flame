@@ -351,6 +351,8 @@ class TopAggregator(SyncTopAgg):
 
     def _reset_agg_goal_variables(self):
         logger.debug("##### reset agg goal variables")
+        # A starvation/budget exit before K is not a committed model version.
+        self._round_committed = False
         # reset agg goal count
         self._agg_goal_cnt = 0
         if getattr(self, "_dkc_pending_k", None) is not None:  # bare-init guard (tests)
@@ -423,6 +425,12 @@ class TopAggregator(SyncTopAgg):
         for msg, metadata in channel.drain_ready(waiting, timeout=None):
             if not msg:
                 continue
+            prepared = self._prepare_simulated_update(channel, metadata[0], msg, metadata)
+            if prepared is None:
+                self._avail_drop_inflight(metadata[0])
+                self.commit_withheld(metadata[0])
+                continue
+            msg, metadata = prepared
             sct = msg.get(MessageType.SIM_COMPLETION_TS)
             self._sim_buffer.add(metadata[0], float(sct if sct is not None else self._vclock.now), (msg, metadata))
             logger.info(f"[EVICTED_INGEST] end={str(metadata[0])[-4:]} sct={sct}")
@@ -475,6 +483,11 @@ class TopAggregator(SyncTopAgg):
             # Buffer one received update into the sct-ordered reorder buffer,
             # keyed by its actual sender + sct.
             actual_end = metadata[0]
+            prepared = self._prepare_simulated_update(channel, actual_end, msg, metadata)
+            if prepared is None:
+                self._avail_drop_inflight(actual_end)
+                return
+            msg, metadata = prepared
             self._note_sim_known_delay(actual_end, msg)
             sct = msg.get(MessageType.SIM_COMPLETION_TS)
             if sct is None:
@@ -944,7 +957,7 @@ class TopAggregator(SyncTopAgg):
                 logger.debug(f"[AGG_RECV] no live recv ends (round={self._round}); skipping")
                 # F.2: in sim, advance vclock to next availability event instead of
                 # wall-sleeping — covers felix and fedbuff asyncfl starvation paths.
-                if self.simulated and self.trainer_event_dict is not None:
+                if self.simulated and self._has_simulation_schedule():
                     _nxt = self._next_avail_vclock()
                     # FX-N56: a held pick's 90s timeout frees its slot, so it is a wake-up too (FX-L25).
                     _sst = [self._avail_send_ts(channel, e) for e in self._withheld_slot_held]
@@ -1004,6 +1017,14 @@ class TopAggregator(SyncTopAgg):
             self._record_commit_belief(end)
             self.commit_withheld(end)  # an evicted/abandoned trainer's late update arrived
         _t_msg_start = datetime.now()  # start of per-message processing (vii)
+
+        # A completed TRAIN attempt with no data is not an EVAL report. Free
+        # its slot and version guard so a later capture can retry this model.
+        if msg.get(MessageType.TASK_TO_PERFORM) == "train" and msg.get(MessageType.DATASET_SIZE) == 0:
+            self._avail_free_slot_ledger(channel, end)
+            self._avail_drop_inflight(end)
+            self._task_ledger.pop((end, "train"), None)
+            return
 
         # NOTE: Only 2 types of messages are expected here: (i) model
         # updates after task_to_perform=TRAIN with weights or (ii)
@@ -1608,6 +1629,7 @@ class TopAggregator(SyncTopAgg):
 
         # update model with global weights
         self._update_model()
+        self._round_committed = True
 
         # decrement counter since updates consumed from queue
         self._updates_in_queue -= self._agg_goal
@@ -1758,7 +1780,7 @@ class TopAggregator(SyncTopAgg):
             logger.debug(f"channel not found for tag {tag}")
             return
 
-        channel.await_join()
+        self._await_training_channel(channel)
         # wait for the configured cohort so real/sim select from the same pool
         self._await_min_trainers(channel)
         self._update_weights()
@@ -1831,6 +1853,9 @@ class TopAggregator(SyncTopAgg):
         # commits, NOT the unavailable list (which is for UN_AVL trainers that can't
         # participate at all). Marking busy trainers unavailable here frees their slot
         # and over-selects toward N — see _sim_hold_busy_slots.
+        curr_unavail_trainer_list = list(
+            set(curr_unavail_trainer_list) | self._extra_unavailable_trainers()
+        )
         channel.set_curr_unavailable_trainers(
             trainer_unavail_list=curr_unavail_trainer_list
         )
@@ -1921,10 +1946,18 @@ class TopAggregator(SyncTopAgg):
             _cached = getattr(self, "_dispatch_payload", None)
             if _cached is not None and _cached[0] == _key:
                 _shared_payload = _cached[1]
+                base_msg.update(_cached[2])
             else:
                 base_msg[MessageType.WEIGHTS_BYTES] = pack_weights(self.weights)  # FX-N77
-                _shared_payload = channel.dumps(base_msg)
-                self._dispatch_payload = (_key, _shared_payload)
+                _shared_payload = None
+            prepared = self._prepare_training_dispatch(channel, _send_ends, base_msg)
+            if prepared is not base_msg or _shared_payload is None:
+                _shared_payload = channel.dumps(prepared)
+            # Keep immutable model bytes cached, but refresh assignment headers
+            # on every dispatch, including a retry of the same model version.
+            # The default no-op hook needs only the serialized payload cache.
+            _header_base = dict(base_msg) if prepared is not base_msg else {}
+            self._dispatch_payload = (_key, _shared_payload, _header_base)
         else:
             base_msg[MessageType.WEIGHTS_BYTES] = pack_weights(self.weights)  # FX-N77
 
@@ -1955,6 +1988,7 @@ class TopAggregator(SyncTopAgg):
                 if _staggered:
                     _m = dict(base_msg)
                     _m[MessageType.SIM_SEND_TS] = _sst
+                    _m = self._prepare_training_dispatch(channel, [end], _m)
                     payload = channel.dumps(_m)
                 else:
                     payload = _shared_payload

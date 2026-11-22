@@ -34,6 +34,38 @@ class TestFedBuffLearningRate:
         with pytest.raises(KeyError):
             _make_fedbuff(dataset_name="cifar-10")
 
+    @pytest.mark.parametrize("rate_type", ["old", "norm"])
+    def test_frozen_parameters_survive_stale_partial_deltas(self, rate_type):
+        from flame.mode.horizontal.syncfl.top_aggregator import MemCache
+        from flame.optimizer.train_result import TrainResult
+
+        fb = _make_fedbuff(learning_rate=0.5, agg_rate_conf={"type": rate_type})
+        frozen = torch.tensor([7.0])
+        base = {"features.weight": frozen, "classifier.weight": torch.zeros(1)}
+        delta = fb.do(None, MemCache({"e": TrainResult(
+            {"classifier.weight": torch.ones(1)}, 10, 2, 1.0,
+        )}), total=10, version=5)
+        out = fb.scale_add_agg_weights(base, delta, agg_goal=1)
+        assert out["features.weight"] is frozen
+        assert out["features.weight"].item() == 7.0
+        assert out["classifier.weight"].item() == pytest.approx(0.25)
+
+    def test_frozen_batchnorm_buffers_are_not_required_in_delta(self):
+        from flame.mode.horizontal.syncfl.top_aggregator import MemCache
+        from flame.optimizer.train_result import TrainResult
+
+        fb = _make_fedbuff(learning_rate=1.0)
+        base = {"frozen.running_mean": torch.tensor([4.0]),
+                "active.running_mean": torch.tensor([2.0]), "w": torch.zeros(1)}
+        fb._bn_hist[1] = fb._bn_copy(base)
+        delta = fb.do(None, MemCache({"e": TrainResult(
+            {"active.running_mean": torch.ones(1), "w": torch.ones(1)}, 1, 1, 0.0,
+        )}), total=1, version=1)
+        out = fb.scale_add_agg_weights(base, delta, agg_goal=1)
+        assert out["frozen.running_mean"].item() == 4.0
+        assert out["active.running_mean"].item() == 3.0
+        assert out["w"].item() == 1.0
+
 
 class TestFedBuffNormRate:
     """FX-N109 I7: rate "norm" weights u_i / u_bar x 1/sqrt(1+s); the cycle's mean weight is FedBuff's."""

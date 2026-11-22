@@ -271,8 +271,11 @@ class FedBuff(AbstractOptimizer):
             self._bn_hist.setdefault(self._version, self._bn_copy(base_weights))
         for k in base_weights.keys():
             if bn and is_bn_stat(k):
-                if self._bn_n:
+                if self._bn_n and k in self._bn_sum:
                     base_weights[k] = (self._bn_sum[k] / self._bn_n).to(dtype=base_weights[k].dtype)
+                continue
+            # Frozen parameters are omitted from partial trainer deltas.
+            if k not in agg_goal_weights:
                 continue
             base_weights[k] = (base_weights[k]) + (
                 learning_rate * ((agg_goal_weights[k] / agg_goal))

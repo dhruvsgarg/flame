@@ -37,6 +37,19 @@ def test_mid_cycle_stop_exits_inner_loop():
     assert a._async_inner_loop_done()
 
 
+def test_incomplete_cycle_preserves_stop_and_model_version():
+    a = _agg()
+    a._rounds = 100
+    a._sim_committed = set()
+    a._reset_agg_goal_variables()
+    a._agg_goal_cnt = 3
+    a._work_done = True
+    a.dist_tag = "tag"
+    a.cm = SimpleNamespace(get_by_tag=lambda tag: SimpleNamespace(set_property=lambda *args: None))
+    a.increment_round()
+    assert a._round == 7 and a._work_done and not a._round_committed
+
+
 def test_sim_wall_ceiling_fires_without_round_advance():
     a = _agg(wall_elapsed=500.0)
     assert a._async_inner_loop_done() and a._work_done
