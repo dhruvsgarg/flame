@@ -1069,6 +1069,8 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
 
             if channel._selector is not None:
                 channel._selector.on_update_received(end, msg, self._round, accepted=_accepted)
+            if _wait_k and not _accepted:
+                self._avail_free_slot_ledger(channel, end)
                 
         if _wait_k and len(self._sync_accepted_ends()) < agg_goal:
             # FX-N37: no commit below K; the cache carries, distribute replaces timed-out picks.
@@ -1276,6 +1278,15 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             return math.inf
         nxt = self._next_avail_vclock()
         return math.inf if nxt is None else nxt
+
+    def _sim_sync_wait(self, channel):
+        idle = (set(channel._ends) - self._avail_inflight_ends(channel)
+                - set(self.get_curr_task_ineligible_trainers("train"))
+                - set(self._task_version_keys(channel, "train"))
+                - self._extra_unavailable_trainers())
+        if idle:
+            return  # let the dispatcher replace completed/failed attempts before jumping time
+        return super()._sim_sync_wait(channel)
 
     def _sync_wait_k_plan(self, channel, num_eligible: int, threshold: int):
         """FX-N37: (picks, eligible needed to dispatch) for this version's missing slots; None when none are missing."""
