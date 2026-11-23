@@ -79,6 +79,20 @@ class FrequencyConfig:
     downlink_ghz: float = 11.7  # mid of FCC 10.7-12.7 GHz DL band
     uplink_ghz: float = 14.25  # mid of FCC 14.0-14.5 GHz UL band
     bandwidth_mhz: float = 240.0  # FCC-filed per-channel bandwidth
+    # Per-direction overrides; None = bandwidth_mhz.
+    uplink_bandwidth_mhz: Optional[float] = None
+    downlink_bandwidth_mhz: Optional[float] = None
+
+    # Parallel channels per direction, each at full EIRP over its own bandwidth (FCC filing: 8).
+    uplink_channels: int = 1
+    downlink_channels: int = 1
+
+    def bandwidth_mhz_for(self, direction: str) -> float:
+        bw = self.uplink_bandwidth_mhz if direction == "uplink" else self.downlink_bandwidth_mhz
+        return self.bandwidth_mhz if bw is None else bw
+
+    def channels_for(self, direction: str) -> int:
+        return max(1, int(self.uplink_channels if direction == "uplink" else self.downlink_channels))
 
 
 @dataclass
@@ -114,6 +128,56 @@ class IonosphericConfig:
     # is a representative Ku-band figure; override directly for a
     # different value rather than tuning formula inputs.
     loss_db: float = 0.005
+
+
+@dataclass
+class TransferConfig:
+    # Fraction of Shannon capacity actually achieved (modem/coding/protocol
+    # overhead). 1.0 = the Shannon upper bound.
+    efficiency: float = 1.0
+    # Bytes per model transfer; None = measured from the model's weights.
+    payload_bytes: Optional[int] = None
+    speed_of_light_km_s: float = 299792.458
+    # Seconds a trainer stalls when its satellite never has a path to the ground
+    # station. 0 = legacy behaviour (no comm delay, i.e. the leg is free). A large
+    # value (e.g. 86400) makes such a trainer unable to finish a round, so the
+    # aggregator's send timeout replaces it instead of it completing instantly.
+    unreachable_comm_s: float = 0.0
+
+
+@dataclass
+class DirectConfig:
+    # Aggregator only selects trainers whose satellite is above the ground
+    # station's min elevation at selection time. Trainers whose satellite_index
+    # isn't known yet (before their first message) are not filtered.
+    visible_only: bool = False
+
+
+@dataclass
+class IslConfig:
+    # Multi-hop path latency/hop count per (timestep, satellite) from this
+    # ground station (one-way ms; hop_count 1 = directly visible).
+    latency_path: str = "lib/python/examples/_metadata/leo/latency.npz"
+    # SDA Optical Communication Terminal standard v3 (1550 nm, 2.5 Gbps OOK); the RF ground leg is usually the bottleneck.
+    throughput_mbps: float = 2500.0
+    per_hop_processing_ms: float = 0.0
+    # Sticky mode: gateway picked by longest remaining visibility, replaced
+    # only when it leaves view or another satellite is this many degrees higher.
+    switch_margin_deg: float = 10.0
+    # "best_rate": best RF rate in view, re-picked every timestep; or "sticky" (above).
+    gateway_selection: str = "best_rate"
+
+
+@dataclass
+class ToxiproxyConfig:
+    api_host: str = "127.0.0.1"
+    api_port: int = 8474
+    # Trainer i listens on listen_port_base + satellite_index.
+    listen_host: str = "127.0.0.1"
+    listen_port_base: int = 23000
+    # Multiplier on modeled throughput before it becomes a bandwidth toxic,
+    # since localhost Toxiproxy can't reproduce Gbps-scale rates faithfully.
+    bandwidth_scale: float = 1.0
 
 
 def _sub(cls_, raw_sub: Optional[dict], key_map: dict):
@@ -155,6 +219,16 @@ class LinkLayerConfig:
     # satellite_coordinates_path (geodetic.npz, lat/lon only) already points
     # at; this is the sibling ecef.npz, needed for altitude/slant range.
     satellite_ecef_path: str = "lib/python/examples/_metadata/leo/ecef.npz"
+    # Trainer registry (task_id -> trainer_id). The aggregator maps each end to its
+    # satellite (trainer_id - 1) from this file, so direct.visible_only can filter
+    # from the first selection, before any trainer has reported its satellite index.
+    trainer_registry_path: str = "lib/python/examples/_metadata/trainer_registry.yaml"
+    # "direct": ground station <-> satellite only, waiting for the next pass
+    # when not visible. "isl": relay via inter-satellite links (latency.npz).
+    routing: str = "direct"
+    # Real-mode delay enforcement: "sleep" (trainer sleeps the comm legs) or
+    # "toxiproxy" (per-trainer proxy shapes the real MQTT traffic).
+    enforcement: str = "sleep"
     geometry: GeometryConfig = field(default_factory=GeometryConfig)
     physical: PhysicalConfig = field(default_factory=PhysicalConfig)
     pathloss: PathLossConfig = field(default_factory=PathLossConfig)
@@ -164,6 +238,10 @@ class LinkLayerConfig:
     losses: LossConfig = field(default_factory=LossConfig)
     atmospheric: AtmosphericConfig = field(default_factory=AtmosphericConfig)
     ionospheric: IonosphericConfig = field(default_factory=IonosphericConfig)
+    transfer: TransferConfig = field(default_factory=TransferConfig)
+    direct: DirectConfig = field(default_factory=DirectConfig)
+    isl: IslConfig = field(default_factory=IslConfig)
+    toxiproxy: ToxiproxyConfig = field(default_factory=ToxiproxyConfig)
 
     @property
     def precompute(self) -> bool:
@@ -184,6 +262,11 @@ class LinkLayerConfig:
                 raw.get("minReferenceRangeKm", cls.min_reference_range_km)
             ),
             satellite_ecef_path=str(raw.get("satelliteEcefPath", cls.satellite_ecef_path)),
+            trainer_registry_path=str(
+                raw.get("trainerRegistryPath", cls.trainer_registry_path)
+            ),
+            routing=str(raw.get("routing", cls.routing)),
+            enforcement=str(raw.get("enforcement", cls.enforcement)),
             geometry=_sub(
                 GeometryConfig,
                 raw.get("geometry"),
@@ -222,6 +305,10 @@ class LinkLayerConfig:
                     "downlinkGhz": "downlink_ghz",
                     "uplinkGhz": "uplink_ghz",
                     "bandwidthMhz": "bandwidth_mhz",
+                    "uplinkBandwidthMhz": "uplink_bandwidth_mhz",
+                    "downlinkBandwidthMhz": "downlink_bandwidth_mhz",
+                    "uplinkChannels": "uplink_channels",
+                    "downlinkChannels": "downlink_channels",
                 },
             ),
             losses=_sub(
@@ -246,5 +333,42 @@ class LinkLayerConfig:
                 IonosphericConfig,
                 raw.get("ionospheric"),
                 {"lossDb": "loss_db"},
+            ),
+            transfer=_sub(
+                TransferConfig,
+                raw.get("transfer"),
+                {
+                    "efficiency": "efficiency",
+                    "payloadBytes": "payload_bytes",
+                    "speedOfLightKmS": "speed_of_light_km_s",
+                    "unreachableCommS": "unreachable_comm_s",
+                },
+            ),
+            direct=_sub(
+                DirectConfig,
+                raw.get("direct"),
+                {"visibleOnly": "visible_only"},
+            ),
+            isl=_sub(
+                IslConfig,
+                raw.get("isl"),
+                {
+                    "latencyPath": "latency_path",
+                    "throughputMbps": "throughput_mbps",
+                    "perHopProcessingMs": "per_hop_processing_ms",
+                    "switchMarginDeg": "switch_margin_deg",
+                    "gatewaySelection": "gateway_selection",
+                },
+            ),
+            toxiproxy=_sub(
+                ToxiproxyConfig,
+                raw.get("toxiproxy"),
+                {
+                    "apiHost": "api_host",
+                    "apiPort": "api_port",
+                    "listenHost": "listen_host",
+                    "listenPortBase": "listen_port_base",
+                    "bandwidthScale": "bandwidth_scale",
+                },
             ),
         )

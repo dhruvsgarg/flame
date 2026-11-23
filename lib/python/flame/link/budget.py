@@ -35,7 +35,7 @@ Formula references:
 
 import math
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 
@@ -72,7 +72,8 @@ class LinkBudgetResult:
 
 
 def _snr_db(
-    slant_range_km: float, elevation_deg: float, freq_ghz: float, cfg: LinkLayerConfig
+    slant_range_km: float, elevation_deg: float, freq_ghz: float, cfg: LinkLayerConfig,
+    bandwidth_mhz: Optional[float] = None,
 ) -> Tuple[float, float, float, float, float]:
     """Returns (snr_db, free_space_path_loss_db, atmospheric_loss_db, ionospheric_loss_db, total_path_loss_db)."""
     free_space_path_loss_db = compute_free_space_path_loss_db(
@@ -99,7 +100,7 @@ def _snr_db(
     received_power_dbw = (
         cfg.satellite.eirp_dbw + cfg.ground_station.antenna_gain_dbi - total_path_loss_db
     )
-    bandwidth_hz = cfg.frequency.bandwidth_mhz * 1e6
+    bandwidth_hz = (cfg.frequency.bandwidth_mhz if bandwidth_mhz is None else bandwidth_mhz) * 1e6
     # Johnson-Nyquist thermal noise floor: N = k*T*B, in dBW.
     thermal_noise_floor_dbw = 10.0 * math.log10(
         cfg.physical.boltzmann_j_per_k * cfg.ground_station.system_noise_temp_k * bandwidth_hz
@@ -124,6 +125,8 @@ def compute_link_budget(
     against `cfg.ground_station`.
     """
     freq_ghz = cfg.frequency.downlink_ghz if direction == "downlink" else cfg.frequency.uplink_ghz
+    bandwidth_mhz = cfg.frequency.bandwidth_mhz_for(direction)
+    channels = cfg.frequency.channels_for(direction)
 
     ground_station_ecef_km = geodetic_to_ecef_km(
         cfg.ground_station.lat_deg,
@@ -142,8 +145,8 @@ def compute_link_budget(
         float(np.linalg.norm(np.asarray(sat_ecef_km, dtype=float)) - np.linalg.norm(ground_station_ecef_km)),
         cfg.min_reference_range_km,
     )
-    zenith_reference_snr_db, *_ = _snr_db(satellite_altitude_km, _ZENITH_ELEVATION_DEG, freq_ghz, cfg)
-    zenith_reference_throughput_mbps = _shannon_mbps(zenith_reference_snr_db, cfg.frequency.bandwidth_mhz)
+    zenith_reference_snr_db, *_ = _snr_db(satellite_altitude_km, _ZENITH_ELEVATION_DEG, freq_ghz, cfg, bandwidth_mhz)
+    zenith_reference_throughput_mbps = channels * _shannon_mbps(zenith_reference_snr_db, bandwidth_mhz)
 
     if elevation_deg < cfg.min_elevation_deg:
         return LinkBudgetResult(
@@ -163,9 +166,9 @@ def compute_link_budget(
         )
 
     snr_db, free_space_path_loss_db, atmospheric_loss_db, ionospheric_loss_db, total_path_loss_db = _snr_db(
-        slant_range_km, elevation_deg, freq_ghz, cfg
+        slant_range_km, elevation_deg, freq_ghz, cfg, bandwidth_mhz
     )
-    throughput_mbps = _shannon_mbps(snr_db, cfg.frequency.bandwidth_mhz)
+    throughput_mbps = channels * _shannon_mbps(snr_db, bandwidth_mhz)
     sinr_degradation_db = zenith_reference_snr_db - snr_db
     throughput_loss_pct = (
         max(0.0, (zenith_reference_throughput_mbps - throughput_mbps) / zenith_reference_throughput_mbps * 100.0)

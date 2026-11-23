@@ -8,6 +8,9 @@ trainers:
     compute_ms_per_sample: 153.0
     bandwidth_kbps: 2209.615982329485
     training_delay_s: '4.0'
+    computation_time_ms:
+      mobile_device: 4000.0
+      gpu_a40: 200.0
     speed_class: fast
     mobiperf_device_id: device_001
   trainer_002:
@@ -17,6 +20,9 @@ trainers:
     compute_ms_per_sample: 39.0
     bandwidth_kbps: 18437.311985652217
     training_delay_s: '16.0'
+    computation_time_ms:
+      mobile_device: 16000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_002
   trainer_003:
@@ -26,6 +32,9 @@ trainers:
     compute_ms_per_sample: 22.0
     bandwidth_kbps: 22915.494847737755
     training_delay_s: '13.0'
+    computation_time_ms:
+      mobile_device: 13000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_003
   trainer_004:
@@ -35,6 +44,9 @@ trainers:
     compute_ms_per_sample: 149.0
     bandwidth_kbps: 13507.696000153657
     training_delay_s: '7.0'
+    computation_time_ms:
+      mobile_device: 7000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_004
   trainer_005:
@@ -44,6 +56,9 @@ trainers:
     compute_ms_per_sample: 29.0
     bandwidth_kbps: 6924.407283130328
     training_delay_s: '18.0'
+    computation_time_ms:
+      mobile_device: 18000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_005
   trainer_006:
@@ -53,6 +68,9 @@ trainers:
     compute_ms_per_sample: 138.0
     bandwidth_kbps: 14506.494272424507
     training_delay_s: '5.0'
+    computation_time_ms:
+      mobile_device: 5000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_006
   trainer_007:
@@ -62,6 +80,9 @@ trainers:
     compute_ms_per_sample: 176.0
     bandwidth_kbps: 32545.573620752573
     training_delay_s: '10.0'
+    computation_time_ms:
+      mobile_device: 10000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_007
   trainer_008:
@@ -71,6 +92,9 @@ trainers:
     compute_ms_per_sample: 44.0
     bandwidth_kbps: 42360.068898122656
     training_delay_s: '17.0'
+    computation_time_ms:
+      mobile_device: 17000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_008
   trainer_009:
@@ -80,6 +104,9 @@ trainers:
     compute_ms_per_sample: 154.0
     bandwidth_kbps: 1931.2100827831061
     training_delay_s: '13.0'
+    computation_time_ms:
+      mobile_device: 13000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_009
   trainer_010:
@@ -89,6 +116,9 @@ trainers:
     compute_ms_per_sample: 64.0
     bandwidth_kbps: 3345.713888063672
     training_delay_s: '11.0'
+    computation_time_ms:
+      mobile_device: 11000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_010
   trainer_011:
@@ -98,6 +128,9 @@ trainers:
     compute_ms_per_sample: 138.0
     bandwidth_kbps: 7367.469193678867
     training_delay_s: '11.0'
+    computation_time_ms:
+      mobile_device: 11000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_011
   trainer_012:
@@ -107,6 +140,9 @@ trainers:
     compute_ms_per_sample: 40.0
     bandwidth_kbps: 4241.066499003477
     training_delay_s: '19.0'
+    computation_time_ms:
+      mobile_device: 19000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_012
   trainer_013:
@@ -116,6 +152,9 @@ trainers:
     compute_ms_per_sample: 28.0
     bandwidth_kbps: 1184.0519555475319
     training_delay_s: '10.0'
+    computation_time_ms:
+      mobile_device: 10000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_013
   trainer_014:
@@ -125,6 +164,9 @@ trainers:
     compute_ms_per_sample: 15.0
     bandwidth_kbps: 3146.9061485778047
     training_delay_s: '3.0'
+    computation_time_ms:
+      mobile_device: 3000.0
+      gpu_a40: 200.0
     speed_class: fast
     mobiperf_device_id: device_014
   trainer_015:
@@ -134,6 +176,9 @@ trainers:
     compute_ms_per_sample: 25.0
     bandwidth_kbps: 3824.6230841666006
     training_delay_s: '6.0'
+    computation_time_ms:
+      mobile_device: 6000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_015
   trainer_016:
@@ -143,6 +188,9 @@ trainers:
     compute_ms_per_sample: 72.0
     bandwidth_kbps: 32545.573620752573
     training_delay_s: '13.0'
+    computation_time_ms:
+      mobile_device: 13000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_016
   trainer_017:
@@ -152,6 +200,9 @@ trainers:
     compute_ms_per_sample: 192.0
     bandwidth_kbps: 2621.5871497118596
     training_delay_s: '14.0'
+    computation_time_ms:
+      mobile_device: 14000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_017
   trainer_018:
@@ -161,6 +212,9 @@ trainers:
     compute_ms_per_sample: 143.0
     bandwidth_kbps: 2217.173394694422
     training_delay_s: '9.0'
+    computation_time_ms:
+      mobile_device: 9000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_018
   trainer_019:
@@ -170,6 +224,9 @@ trainers:
     compute_ms_per_sample: 136.0
     bandwidth_kbps: 8858.753535644008
     training_delay_s: '2.0'
+    computation_time_ms:
+      mobile_device: 2000.0
+      gpu_a40: 200.0
     speed_class: fast
     mobiperf_device_id: device_019
   trainer_020:
@@ -179,6 +236,9 @@ trainers:
     compute_ms_per_sample: 146.0
     bandwidth_kbps: 2855.518125543935
     training_delay_s: '47.0'
+    computation_time_ms:
+      mobile_device: 47000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_020
   trainer_021:
@@ -188,6 +248,9 @@ trainers:
     compute_ms_per_sample: 159.0
     bandwidth_kbps: 2903.641246394103
     training_delay_s: '4.0'
+    computation_time_ms:
+      mobile_device: 4000.0
+      gpu_a40: 200.0
     speed_class: fast
     mobiperf_device_id: device_021
   trainer_022:
@@ -197,6 +260,9 @@ trainers:
     compute_ms_per_sample: 24.0
     bandwidth_kbps: 24825.222157090775
     training_delay_s: '11.0'
+    computation_time_ms:
+      mobile_device: 11000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_022
   trainer_023:
@@ -206,6 +272,9 @@ trainers:
     compute_ms_per_sample: 189.0
     bandwidth_kbps: 15842.066193766534
     training_delay_s: '21.0'
+    computation_time_ms:
+      mobile_device: 21000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_023
   trainer_024:
@@ -215,6 +284,9 @@ trainers:
     compute_ms_per_sample: 41.0
     bandwidth_kbps: 28807.650799179883
     training_delay_s: '12.0'
+    computation_time_ms:
+      mobile_device: 12000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_024
   trainer_025:
@@ -224,6 +296,9 @@ trainers:
     compute_ms_per_sample: 49.0
     bandwidth_kbps: 1857.7542127713916
     training_delay_s: '15.0'
+    computation_time_ms:
+      mobile_device: 15000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_025
   trainer_026:
@@ -233,6 +308,9 @@ trainers:
     compute_ms_per_sample: 30.0
     bandwidth_kbps: 2065.0137550748263
     training_delay_s: '2.0'
+    computation_time_ms:
+      mobile_device: 2000.0
+      gpu_a40: 200.0
     speed_class: fast
     mobiperf_device_id: device_026
   trainer_027:
@@ -242,6 +320,9 @@ trainers:
     compute_ms_per_sample: 23.0
     bandwidth_kbps: 7392.993085887681
     training_delay_s: '13.0'
+    computation_time_ms:
+      mobile_device: 13000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_027
   trainer_028:
@@ -251,6 +332,9 @@ trainers:
     compute_ms_per_sample: 21.0
     bandwidth_kbps: 1924.7223737730505
     training_delay_s: '11.0'
+    computation_time_ms:
+      mobile_device: 11000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_028
   trainer_029:
@@ -260,6 +344,9 @@ trainers:
     compute_ms_per_sample: 41.0
     bandwidth_kbps: 2546.24232202083
     training_delay_s: '8.0'
+    computation_time_ms:
+      mobile_device: 8000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_029
   trainer_030:
@@ -269,6 +356,9 @@ trainers:
     compute_ms_per_sample: 156.0
     bandwidth_kbps: 10442.319676342106
     training_delay_s: '15.0'
+    computation_time_ms:
+      mobile_device: 15000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_030
   trainer_031:
@@ -278,6 +368,9 @@ trainers:
     compute_ms_per_sample: 192.0
     bandwidth_kbps: 4918.150263564624
     training_delay_s: '12.0'
+    computation_time_ms:
+      mobile_device: 12000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_031
   trainer_032:
@@ -287,6 +380,9 @@ trainers:
     compute_ms_per_sample: 148.0
     bandwidth_kbps: 1097.2596458419018
     training_delay_s: '7.0'
+    computation_time_ms:
+      mobile_device: 7000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_032
   trainer_033:
@@ -296,6 +392,9 @@ trainers:
     compute_ms_per_sample: 183.0
     bandwidth_kbps: 33464.97
     training_delay_s: '6.0'
+    computation_time_ms:
+      mobile_device: 6000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_033
   trainer_034:
@@ -305,6 +404,9 @@ trainers:
     compute_ms_per_sample: 145.0
     bandwidth_kbps: 8727.591590166872
     training_delay_s: '21.0'
+    computation_time_ms:
+      mobile_device: 21000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_034
   trainer_035:
@@ -314,6 +416,9 @@ trainers:
     compute_ms_per_sample: 23.0
     bandwidth_kbps: 1655.0869744396773
     training_delay_s: '8.0'
+    computation_time_ms:
+      mobile_device: 8000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_035
   trainer_036:
@@ -323,6 +428,9 @@ trainers:
     compute_ms_per_sample: 28.0
     bandwidth_kbps: 4241.066499003477
     training_delay_s: '2.0'
+    computation_time_ms:
+      mobile_device: 2000.0
+      gpu_a40: 200.0
     speed_class: fast
     mobiperf_device_id: device_036
   trainer_037:
@@ -332,6 +440,9 @@ trainers:
     compute_ms_per_sample: 21.0
     bandwidth_kbps: 63892.25865924355
     training_delay_s: '9.0'
+    computation_time_ms:
+      mobile_device: 9000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_037
   trainer_038:
@@ -341,6 +452,9 @@ trainers:
     compute_ms_per_sample: 15.0
     bandwidth_kbps: 31718.890073603783
     training_delay_s: '8.0'
+    computation_time_ms:
+      mobile_device: 8000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_038
   trainer_039:
@@ -350,6 +464,9 @@ trainers:
     compute_ms_per_sample: 156.0
     bandwidth_kbps: 6100.98200438069
     training_delay_s: '18.0'
+    computation_time_ms:
+      mobile_device: 18000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_039
   trainer_040:
@@ -359,6 +476,9 @@ trainers:
     compute_ms_per_sample: 27.0
     bandwidth_kbps: 31079.54055631987
     training_delay_s: '7.0'
+    computation_time_ms:
+      mobile_device: 7000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_040
   trainer_041:
@@ -368,6 +488,9 @@ trainers:
     compute_ms_per_sample: 75.0
     bandwidth_kbps: 115252.40990763082
     training_delay_s: '21.0'
+    computation_time_ms:
+      mobile_device: 21000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_041
   trainer_042:
@@ -377,6 +500,9 @@ trainers:
     compute_ms_per_sample: 40.0
     bandwidth_kbps: 11951.128241319064
     training_delay_s: '13.0'
+    computation_time_ms:
+      mobile_device: 13000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_042
   trainer_043:
@@ -386,6 +512,9 @@ trainers:
     compute_ms_per_sample: 148.0
     bandwidth_kbps: 2839.2213281553854
     training_delay_s: '10.0'
+    computation_time_ms:
+      mobile_device: 10000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_043
   trainer_044:
@@ -395,6 +524,9 @@ trainers:
     compute_ms_per_sample: 18.0
     bandwidth_kbps: 2055.3498246579957
     training_delay_s: '5.0'
+    computation_time_ms:
+      mobile_device: 5000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_044
   trainer_045:
@@ -404,6 +536,9 @@ trainers:
     compute_ms_per_sample: 18.0
     bandwidth_kbps: 5648.109619499134
     training_delay_s: '15.0'
+    computation_time_ms:
+      mobile_device: 15000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_045
   trainer_046:
@@ -413,6 +548,9 @@ trainers:
     compute_ms_per_sample: 19.0
     bandwidth_kbps: 4977.848335644711
     training_delay_s: '24.0'
+    computation_time_ms:
+      mobile_device: 24000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_046
   trainer_047:
@@ -422,6 +560,9 @@ trainers:
     compute_ms_per_sample: 82.0
     bandwidth_kbps: 70834.35783865782
     training_delay_s: '5.0'
+    computation_time_ms:
+      mobile_device: 5000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_047
   trainer_048:
@@ -431,6 +572,9 @@ trainers:
     compute_ms_per_sample: 168.0
     bandwidth_kbps: 7715.247023242061
     training_delay_s: '7.0'
+    computation_time_ms:
+      mobile_device: 7000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_048
   trainer_049:
@@ -440,6 +584,9 @@ trainers:
     compute_ms_per_sample: 23.0
     bandwidth_kbps: 4647.477833353735
     training_delay_s: '14.0'
+    computation_time_ms:
+      mobile_device: 14000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_049
   trainer_050:
@@ -449,6 +596,9 @@ trainers:
     compute_ms_per_sample: 154.0
     bandwidth_kbps: 3502.51020829259
     training_delay_s: '12.0'
+    computation_time_ms:
+      mobile_device: 12000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_050
   trainer_051:
@@ -458,6 +608,9 @@ trainers:
     compute_ms_per_sample: 143.0
     bandwidth_kbps: 14245.531261193886
     training_delay_s: '5.0'
+    computation_time_ms:
+      mobile_device: 5000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_051
   trainer_052:
@@ -467,6 +620,9 @@ trainers:
     compute_ms_per_sample: 143.0
     bandwidth_kbps: 8096.560508726679
     training_delay_s: '16.0'
+    computation_time_ms:
+      mobile_device: 16000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_052
   trainer_053:
@@ -476,6 +632,9 @@ trainers:
     compute_ms_per_sample: 27.0
     bandwidth_kbps: 67958.78315823629
     training_delay_s: '14.0'
+    computation_time_ms:
+      mobile_device: 14000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_053
   trainer_054:
@@ -485,6 +644,9 @@ trainers:
     compute_ms_per_sample: 191.0
     bandwidth_kbps: 2637.990718150793
     training_delay_s: '4.0'
+    computation_time_ms:
+      mobile_device: 4000.0
+      gpu_a40: 200.0
     speed_class: fast
     mobiperf_device_id: device_054
   trainer_055:
@@ -494,6 +656,9 @@ trainers:
     compute_ms_per_sample: 153.0
     bandwidth_kbps: 22888.467692307695
     training_delay_s: '14.0'
+    computation_time_ms:
+      mobile_device: 14000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_055
   trainer_056:
@@ -503,6 +668,9 @@ trainers:
     compute_ms_per_sample: 27.0
     bandwidth_kbps: 4904.547648501977
     training_delay_s: '23.0'
+    computation_time_ms:
+      mobile_device: 23000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_056
   trainer_057:
@@ -512,6 +680,9 @@ trainers:
     compute_ms_per_sample: 30.0
     bandwidth_kbps: 4596.307662111975
     training_delay_s: '30.0'
+    computation_time_ms:
+      mobile_device: 30000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_057
   trainer_058:
@@ -521,6 +692,9 @@ trainers:
     compute_ms_per_sample: 27.0
     bandwidth_kbps: 1659.5303771847364
     training_delay_s: '21.0'
+    computation_time_ms:
+      mobile_device: 21000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_058
   trainer_059:
@@ -530,6 +704,9 @@ trainers:
     compute_ms_per_sample: 15.0
     bandwidth_kbps: 1841.2539136666098
     training_delay_s: '28.0'
+    computation_time_ms:
+      mobile_device: 28000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_059
   trainer_060:
@@ -539,6 +716,9 @@ trainers:
     compute_ms_per_sample: 183.0
     bandwidth_kbps: 1016.8808511071711
     training_delay_s: '12.0'
+    computation_time_ms:
+      mobile_device: 12000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_060
   trainer_061:
@@ -548,6 +728,9 @@ trainers:
     compute_ms_per_sample: 40.0
     bandwidth_kbps: 1901.6888655072644
     training_delay_s: '8.0'
+    computation_time_ms:
+      mobile_device: 8000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_061
   trainer_062:
@@ -557,6 +740,9 @@ trainers:
     compute_ms_per_sample: 192.0
     bandwidth_kbps: 2904.5589866692726
     training_delay_s: '3.0'
+    computation_time_ms:
+      mobile_device: 3000.0
+      gpu_a40: 200.0
     speed_class: fast
     mobiperf_device_id: device_062
   trainer_063:
@@ -566,6 +752,9 @@ trainers:
     compute_ms_per_sample: 31.0
     bandwidth_kbps: 3843.4681731702744
     training_delay_s: '10.0'
+    computation_time_ms:
+      mobile_device: 10000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_063
   trainer_064:
@@ -575,6 +764,9 @@ trainers:
     compute_ms_per_sample: 156.0
     bandwidth_kbps: 5289.78951038109
     training_delay_s: '20.0'
+    computation_time_ms:
+      mobile_device: 20000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_064
   trainer_065:
@@ -584,6 +776,9 @@ trainers:
     compute_ms_per_sample: 40.0
     bandwidth_kbps: 4504.865153655598
     training_delay_s: '2.0'
+    computation_time_ms:
+      mobile_device: 2000.0
+      gpu_a40: 200.0
     speed_class: fast
     mobiperf_device_id: device_065
   trainer_066:
@@ -593,6 +788,9 @@ trainers:
     compute_ms_per_sample: 27.0
     bandwidth_kbps: 12221.982886732778
     training_delay_s: '22.0'
+    computation_time_ms:
+      mobile_device: 22000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_066
   trainer_067:
@@ -602,6 +800,9 @@ trainers:
     compute_ms_per_sample: 96.0
     bandwidth_kbps: 1136.4121868672014
     training_delay_s: '7.0'
+    computation_time_ms:
+      mobile_device: 7000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_067
   trainer_068:
@@ -611,6 +812,9 @@ trainers:
     compute_ms_per_sample: 150.0
     bandwidth_kbps: 3869.773969576111
     training_delay_s: '6.0'
+    computation_time_ms:
+      mobile_device: 6000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_068
   trainer_069:
@@ -620,6 +824,9 @@ trainers:
     compute_ms_per_sample: 72.0
     bandwidth_kbps: 1819.7471560742927
     training_delay_s: '15.0'
+    computation_time_ms:
+      mobile_device: 15000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_069
   trainer_070:
@@ -629,6 +836,9 @@ trainers:
     compute_ms_per_sample: 160.0
     bandwidth_kbps: 2253.335774792474
     training_delay_s: '5.0'
+    computation_time_ms:
+      mobile_device: 5000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_070
   trainer_071:
@@ -638,6 +848,9 @@ trainers:
     compute_ms_per_sample: 156.0
     bandwidth_kbps: 5485.216127839542
     training_delay_s: '5.0'
+    computation_time_ms:
+      mobile_device: 5000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_071
   trainer_072:
@@ -647,6 +860,9 @@ trainers:
     compute_ms_per_sample: 30.0
     bandwidth_kbps: 24004.736574978717
     training_delay_s: '4.0'
+    computation_time_ms:
+      mobile_device: 4000.0
+      gpu_a40: 200.0
     speed_class: fast
     mobiperf_device_id: device_072
   trainer_073:
@@ -656,6 +872,9 @@ trainers:
     compute_ms_per_sample: 19.0
     bandwidth_kbps: 7388.711238435047
     training_delay_s: '21.0'
+    computation_time_ms:
+      mobile_device: 21000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_073
   trainer_074:
@@ -665,6 +884,9 @@ trainers:
     compute_ms_per_sample: 192.0
     bandwidth_kbps: 28472.16013839707
     training_delay_s: '2.0'
+    computation_time_ms:
+      mobile_device: 2000.0
+      gpu_a40: 200.0
     speed_class: fast
     mobiperf_device_id: device_074
   trainer_075:
@@ -674,6 +896,9 @@ trainers:
     compute_ms_per_sample: 25.0
     bandwidth_kbps: 2290.9446288967583
     training_delay_s: '28.0'
+    computation_time_ms:
+      mobile_device: 28000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_075
   trainer_076:
@@ -683,6 +908,9 @@ trainers:
     compute_ms_per_sample: 50.0
     bandwidth_kbps: 1085.0805604161899
     training_delay_s: '3.0'
+    computation_time_ms:
+      mobile_device: 3000.0
+      gpu_a40: 200.0
     speed_class: fast
     mobiperf_device_id: device_076
   trainer_077:
@@ -692,6 +920,9 @@ trainers:
     compute_ms_per_sample: 173.0
     bandwidth_kbps: 12221.982886732778
     training_delay_s: '10.0'
+    computation_time_ms:
+      mobile_device: 10000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_077
   trainer_078:
@@ -701,6 +932,9 @@ trainers:
     compute_ms_per_sample: 21.0
     bandwidth_kbps: 1720.5605778789811
     training_delay_s: '22.0'
+    computation_time_ms:
+      mobile_device: 22000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_078
   trainer_079:
@@ -710,6 +944,9 @@ trainers:
     compute_ms_per_sample: 15.0
     bandwidth_kbps: 5522.303428575063
     training_delay_s: '16.0'
+    computation_time_ms:
+      mobile_device: 16000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_079
   trainer_080:
@@ -719,6 +956,9 @@ trainers:
     compute_ms_per_sample: 31.0
     bandwidth_kbps: 115252.40990763082
     training_delay_s: '5.0'
+    computation_time_ms:
+      mobile_device: 5000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_080
   trainer_081:
@@ -728,6 +968,9 @@ trainers:
     compute_ms_per_sample: 22.0
     bandwidth_kbps: 21974.95356951726
     training_delay_s: '22.0'
+    computation_time_ms:
+      mobile_device: 22000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_081
   trainer_082:
@@ -737,6 +980,9 @@ trainers:
     compute_ms_per_sample: 140.0
     bandwidth_kbps: 31863.211230339777
     training_delay_s: '9.0'
+    computation_time_ms:
+      mobile_device: 9000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_082
   trainer_083:
@@ -746,6 +992,9 @@ trainers:
     compute_ms_per_sample: 145.0
     bandwidth_kbps: 12636.345755546148
     training_delay_s: '18.0'
+    computation_time_ms:
+      mobile_device: 18000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_083
   trainer_084:
@@ -755,6 +1004,9 @@ trainers:
     compute_ms_per_sample: 27.0
     bandwidth_kbps: 33440.122314608474
     training_delay_s: '14.0'
+    computation_time_ms:
+      mobile_device: 14000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_084
   trainer_085:
@@ -764,6 +1016,9 @@ trainers:
     compute_ms_per_sample: 22.0
     bandwidth_kbps: 9143.630802759213
     training_delay_s: '27.0'
+    computation_time_ms:
+      mobile_device: 27000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_085
   trainer_086:
@@ -773,6 +1028,9 @@ trainers:
     compute_ms_per_sample: 44.0
     bandwidth_kbps: 1038.0322810179875
     training_delay_s: '3.0'
+    computation_time_ms:
+      mobile_device: 3000.0
+      gpu_a40: 200.0
     speed_class: fast
     mobiperf_device_id: device_086
   trainer_087:
@@ -782,6 +1040,9 @@ trainers:
     compute_ms_per_sample: 31.0
     bandwidth_kbps: 8012.5477591895
     training_delay_s: '15.0'
+    computation_time_ms:
+      mobile_device: 15000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_087
   trainer_088:
@@ -791,6 +1052,9 @@ trainers:
     compute_ms_per_sample: 136.0
     bandwidth_kbps: 1097.2596458419018
     training_delay_s: '7.0'
+    computation_time_ms:
+      mobile_device: 7000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_088
   trainer_089:
@@ -800,6 +1064,9 @@ trainers:
     compute_ms_per_sample: 199.0
     bandwidth_kbps: 2107.9852309072676
     training_delay_s: '4.0'
+    computation_time_ms:
+      mobile_device: 4000.0
+      gpu_a40: 200.0
     speed_class: fast
     mobiperf_device_id: device_089
   trainer_090:
@@ -809,6 +1076,9 @@ trainers:
     compute_ms_per_sample: 27.0
     bandwidth_kbps: 13523.02444615097
     training_delay_s: '10.0'
+    computation_time_ms:
+      mobile_device: 10000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_090
   trainer_091:
@@ -818,6 +1088,9 @@ trainers:
     compute_ms_per_sample: 23.0
     bandwidth_kbps: 4789.241063674561
     training_delay_s: '38.0'
+    computation_time_ms:
+      mobile_device: 38000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_091
   trainer_092:
@@ -827,6 +1100,9 @@ trainers:
     compute_ms_per_sample: 154.0
     bandwidth_kbps: 5212.859303235327
     training_delay_s: '3.0'
+    computation_time_ms:
+      mobile_device: 3000.0
+      gpu_a40: 200.0
     speed_class: fast
     mobiperf_device_id: device_092
   trainer_093:
@@ -836,6 +1112,9 @@ trainers:
     compute_ms_per_sample: 143.0
     bandwidth_kbps: 7388.711238435047
     training_delay_s: '27.0'
+    computation_time_ms:
+      mobile_device: 27000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_093
   trainer_094:
@@ -845,6 +1124,9 @@ trainers:
     compute_ms_per_sample: 74.0
     bandwidth_kbps: 1444.4181396435608
     training_delay_s: '3.0'
+    computation_time_ms:
+      mobile_device: 3000.0
+      gpu_a40: 200.0
     speed_class: fast
     mobiperf_device_id: device_094
   trainer_095:
@@ -854,6 +1136,9 @@ trainers:
     compute_ms_per_sample: 28.0
     bandwidth_kbps: 3039.8082691671516
     training_delay_s: '9.0'
+    computation_time_ms:
+      mobile_device: 9000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_095
   trainer_096:
@@ -863,6 +1148,9 @@ trainers:
     compute_ms_per_sample: 144.0
     bandwidth_kbps: 2103.156368798709
     training_delay_s: '12.0'
+    computation_time_ms:
+      mobile_device: 12000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_096
   trainer_097:
@@ -872,6 +1160,9 @@ trainers:
     compute_ms_per_sample: 41.0
     bandwidth_kbps: 14573.073892861643
     training_delay_s: '5.0'
+    computation_time_ms:
+      mobile_device: 5000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_097
   trainer_098:
@@ -881,6 +1172,9 @@ trainers:
     compute_ms_per_sample: 28.0
     bandwidth_kbps: 30466.59348053789
     training_delay_s: '7.0'
+    computation_time_ms:
+      mobile_device: 7000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_098
   trainer_099:
@@ -890,6 +1184,9 @@ trainers:
     compute_ms_per_sample: 193.0
     bandwidth_kbps: 8051.379057213378
     training_delay_s: '17.0'
+    computation_time_ms:
+      mobile_device: 17000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_099
   trainer_100:
@@ -899,6 +1196,9 @@ trainers:
     compute_ms_per_sample: 41.0
     bandwidth_kbps: 13371.139055633053
     training_delay_s: '36.0'
+    computation_time_ms:
+      mobile_device: 36000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_100
   trainer_101:
@@ -908,6 +1208,9 @@ trainers:
     compute_ms_per_sample: 193.0
     bandwidth_kbps: 7387.928994060325
     training_delay_s: '4.0'
+    computation_time_ms:
+      mobile_device: 4000.0
+      gpu_a40: 200.0
     speed_class: fast
     mobiperf_device_id: device_101
   trainer_102:
@@ -917,6 +1220,9 @@ trainers:
     compute_ms_per_sample: 23.0
     bandwidth_kbps: 3824.6230841666006
     training_delay_s: '20.0'
+    computation_time_ms:
+      mobile_device: 20000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_102
   trainer_103:
@@ -926,6 +1232,9 @@ trainers:
     compute_ms_per_sample: 20.0
     bandwidth_kbps: 6292.539658913886
     training_delay_s: '3.0'
+    computation_time_ms:
+      mobile_device: 3000.0
+      gpu_a40: 200.0
     speed_class: fast
     mobiperf_device_id: device_103
   trainer_104:
@@ -935,6 +1244,9 @@ trainers:
     compute_ms_per_sample: 18.0
     bandwidth_kbps: 1672.371923291186
     training_delay_s: '17.0'
+    computation_time_ms:
+      mobile_device: 17000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_104
   trainer_105:
@@ -944,6 +1256,9 @@ trainers:
     compute_ms_per_sample: 18.0
     bandwidth_kbps: 4835.3523601849065
     training_delay_s: '4.0'
+    computation_time_ms:
+      mobile_device: 4000.0
+      gpu_a40: 200.0
     speed_class: fast
     mobiperf_device_id: device_105
   trainer_106:
@@ -953,6 +1268,9 @@ trainers:
     compute_ms_per_sample: 24.0
     bandwidth_kbps: 4652.290392827601
     training_delay_s: '26.0'
+    computation_time_ms:
+      mobile_device: 26000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_106
   trainer_107:
@@ -962,6 +1280,9 @@ trainers:
     compute_ms_per_sample: 27.0
     bandwidth_kbps: 3039.8082691671516
     training_delay_s: '11.0'
+    computation_time_ms:
+      mobile_device: 11000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_107
   trainer_108:
@@ -971,6 +1292,9 @@ trainers:
     compute_ms_per_sample: 74.0
     bandwidth_kbps: 10445.742857153104
     training_delay_s: '7.0'
+    computation_time_ms:
+      mobile_device: 7000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_108
   trainer_109:
@@ -980,6 +1304,9 @@ trainers:
     compute_ms_per_sample: 27.0
     bandwidth_kbps: 82504.44631466508
     training_delay_s: '29.0'
+    computation_time_ms:
+      mobile_device: 29000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_109
   trainer_110:
@@ -989,6 +1316,9 @@ trainers:
     compute_ms_per_sample: 193.0
     bandwidth_kbps: 5575.836092624551
     training_delay_s: '12.0'
+    computation_time_ms:
+      mobile_device: 12000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_110
   trainer_111:
@@ -998,6 +1328,9 @@ trainers:
     compute_ms_per_sample: 23.0
     bandwidth_kbps: 2730.087848891144
     training_delay_s: '11.0'
+    computation_time_ms:
+      mobile_device: 11000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_111
   trainer_112:
@@ -1007,6 +1340,9 @@ trainers:
     compute_ms_per_sample: 40.0
     bandwidth_kbps: 14273.427466117982
     training_delay_s: '18.0'
+    computation_time_ms:
+      mobile_device: 18000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_112
   trainer_113:
@@ -1016,6 +1352,9 @@ trainers:
     compute_ms_per_sample: 38.0
     bandwidth_kbps: 87075.3198171639
     training_delay_s: '21.0'
+    computation_time_ms:
+      mobile_device: 21000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_113
   trainer_114:
@@ -1025,6 +1364,9 @@ trainers:
     compute_ms_per_sample: 143.0
     bandwidth_kbps: 6384.429196498908
     training_delay_s: '12.0'
+    computation_time_ms:
+      mobile_device: 12000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_114
   trainer_115:
@@ -1034,6 +1376,9 @@ trainers:
     compute_ms_per_sample: 191.0
     bandwidth_kbps: 12113.274113975893
     training_delay_s: '6.0'
+    computation_time_ms:
+      mobile_device: 6000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_115
   trainer_116:
@@ -1043,6 +1388,9 @@ trainers:
     compute_ms_per_sample: 40.0
     bandwidth_kbps: 6770.194572647147
     training_delay_s: '16.0'
+    computation_time_ms:
+      mobile_device: 16000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_116
   trainer_117:
@@ -1052,6 +1400,9 @@ trainers:
     compute_ms_per_sample: 117.0
     bandwidth_kbps: 4203.488831823087
     training_delay_s: '8.0'
+    computation_time_ms:
+      mobile_device: 8000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_117
   trainer_118:
@@ -1061,6 +1412,9 @@ trainers:
     compute_ms_per_sample: 26.0
     bandwidth_kbps: 19808.991592630166
     training_delay_s: '2.0'
+    computation_time_ms:
+      mobile_device: 2000.0
+      gpu_a40: 200.0
     speed_class: fast
     mobiperf_device_id: device_118
   trainer_119:
@@ -1070,6 +1424,9 @@ trainers:
     compute_ms_per_sample: 64.0
     bandwidth_kbps: 3267.390151124515
     training_delay_s: '5.0'
+    computation_time_ms:
+      mobile_device: 5000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_119
   trainer_120:
@@ -1079,6 +1436,9 @@ trainers:
     compute_ms_per_sample: 179.0
     bandwidth_kbps: 15072.26583149737
     training_delay_s: '12.0'
+    computation_time_ms:
+      mobile_device: 12000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_120
   trainer_121:
@@ -1088,6 +1448,9 @@ trainers:
     compute_ms_per_sample: 31.0
     bandwidth_kbps: 2637.990718150793
     training_delay_s: '9.0'
+    computation_time_ms:
+      mobile_device: 9000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_121
   trainer_122:
@@ -1097,6 +1460,9 @@ trainers:
     compute_ms_per_sample: 21.0
     bandwidth_kbps: 1076.136588410951
     training_delay_s: '17.0'
+    computation_time_ms:
+      mobile_device: 17000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_122
   trainer_123:
@@ -1106,6 +1472,9 @@ trainers:
     compute_ms_per_sample: 23.0
     bandwidth_kbps: 3878.6362594793945
     training_delay_s: '10.0'
+    computation_time_ms:
+      mobile_device: 10000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_123
   trainer_124:
@@ -1115,6 +1484,9 @@ trainers:
     compute_ms_per_sample: 156.0
     bandwidth_kbps: 23291.68410175639
     training_delay_s: '2.0'
+    computation_time_ms:
+      mobile_device: 2000.0
+      gpu_a40: 200.0
     speed_class: fast
     mobiperf_device_id: device_124
   trainer_125:
@@ -1124,6 +1496,9 @@ trainers:
     compute_ms_per_sample: 176.0
     bandwidth_kbps: 11539.311025293391
     training_delay_s: '9.0'
+    computation_time_ms:
+      mobile_device: 9000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_125
   trainer_126:
@@ -1133,6 +1508,9 @@ trainers:
     compute_ms_per_sample: 179.0
     bandwidth_kbps: 22914.26763636363
     training_delay_s: '10.0'
+    computation_time_ms:
+      mobile_device: 10000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_126
   trainer_127:
@@ -1142,6 +1520,9 @@ trainers:
     compute_ms_per_sample: 156.0
     bandwidth_kbps: 100206.60815615153
     training_delay_s: '2.0'
+    computation_time_ms:
+      mobile_device: 2000.0
+      gpu_a40: 200.0
     speed_class: fast
     mobiperf_device_id: device_127
   trainer_128:
@@ -1151,6 +1532,9 @@ trainers:
     compute_ms_per_sample: 24.0
     bandwidth_kbps: 1807.5789236274024
     training_delay_s: '10.0'
+    computation_time_ms:
+      mobile_device: 10000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_128
   trainer_129:
@@ -1160,6 +1544,9 @@ trainers:
     compute_ms_per_sample: 183.0
     bandwidth_kbps: 2839.2213281553854
     training_delay_s: '22.0'
+    computation_time_ms:
+      mobile_device: 22000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_129
   trainer_130:
@@ -1169,6 +1556,9 @@ trainers:
     compute_ms_per_sample: 149.0
     bandwidth_kbps: 1036.9598718011687
     training_delay_s: '18.0'
+    computation_time_ms:
+      mobile_device: 18000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_130
   trainer_131:
@@ -1178,6 +1568,9 @@ trainers:
     compute_ms_per_sample: 148.0
     bandwidth_kbps: 2958.563216250499
     training_delay_s: '13.0'
+    computation_time_ms:
+      mobile_device: 13000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_131
   trainer_132:
@@ -1187,6 +1580,9 @@ trainers:
     compute_ms_per_sample: 148.0
     bandwidth_kbps: 1841.2539136666098
     training_delay_s: '12.0'
+    computation_time_ms:
+      mobile_device: 12000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_132
   trainer_133:
@@ -1196,6 +1592,9 @@ trainers:
     compute_ms_per_sample: 30.0
     bandwidth_kbps: 1810.440126491114
     training_delay_s: '2.0'
+    computation_time_ms:
+      mobile_device: 2000.0
+      gpu_a40: 200.0
     speed_class: fast
     mobiperf_device_id: device_133
   trainer_134:
@@ -1205,6 +1604,9 @@ trainers:
     compute_ms_per_sample: 15.0
     bandwidth_kbps: 1614.7084591617918
     training_delay_s: '12.0'
+    computation_time_ms:
+      mobile_device: 12000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_134
   trainer_135:
@@ -1214,6 +1616,9 @@ trainers:
     compute_ms_per_sample: 23.0
     bandwidth_kbps: 31429.81303157679
     training_delay_s: '7.0'
+    computation_time_ms:
+      mobile_device: 7000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_135
   trainer_136:
@@ -1223,6 +1628,9 @@ trainers:
     compute_ms_per_sample: 46.0
     bandwidth_kbps: 2185.4310866449496
     training_delay_s: '15.0'
+    computation_time_ms:
+      mobile_device: 15000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_136
   trainer_137:
@@ -1232,6 +1640,9 @@ trainers:
     compute_ms_per_sample: 24.0
     bandwidth_kbps: 2397.9507295413014
     training_delay_s: '22.0'
+    computation_time_ms:
+      mobile_device: 22000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_137
   trainer_138:
@@ -1241,6 +1652,9 @@ trainers:
     compute_ms_per_sample: 64.0
     bandwidth_kbps: 2903.641246394103
     training_delay_s: '12.0'
+    computation_time_ms:
+      mobile_device: 12000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_138
   trainer_139:
@@ -1250,6 +1664,9 @@ trainers:
     compute_ms_per_sample: 42.0
     bandwidth_kbps: 36021.27728761395
     training_delay_s: '5.0'
+    computation_time_ms:
+      mobile_device: 5000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_139
   trainer_140:
@@ -1259,6 +1676,9 @@ trainers:
     compute_ms_per_sample: 82.0
     bandwidth_kbps: 3186.70896142714
     training_delay_s: '2.0'
+    computation_time_ms:
+      mobile_device: 2000.0
+      gpu_a40: 200.0
     speed_class: fast
     mobiperf_device_id: device_140
   trainer_141:
@@ -1268,6 +1688,9 @@ trainers:
     compute_ms_per_sample: 159.0
     bandwidth_kbps: 3345.713888063672
     training_delay_s: '18.0'
+    computation_time_ms:
+      mobile_device: 18000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_141
   trainer_142:
@@ -1277,6 +1700,9 @@ trainers:
     compute_ms_per_sample: 23.0
     bandwidth_kbps: 58550.43397771459
     training_delay_s: '15.0'
+    computation_time_ms:
+      mobile_device: 15000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_142
   trainer_143:
@@ -1286,6 +1712,9 @@ trainers:
     compute_ms_per_sample: 24.0
     bandwidth_kbps: 133144.06129563495
     training_delay_s: '16.0'
+    computation_time_ms:
+      mobile_device: 16000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_143
   trainer_144:
@@ -1295,6 +1724,9 @@ trainers:
     compute_ms_per_sample: 191.0
     bandwidth_kbps: 2621.5871497118596
     training_delay_s: '3.0'
+    computation_time_ms:
+      mobile_device: 3000.0
+      gpu_a40: 200.0
     speed_class: fast
     mobiperf_device_id: device_144
   trainer_145:
@@ -1304,6 +1736,9 @@ trainers:
     compute_ms_per_sample: 56.0
     bandwidth_kbps: 9847.506913265517
     training_delay_s: '4.0'
+    computation_time_ms:
+      mobile_device: 4000.0
+      gpu_a40: 200.0
     speed_class: fast
     mobiperf_device_id: device_145
   trainer_146:
@@ -1313,6 +1748,9 @@ trainers:
     compute_ms_per_sample: 50.0
     bandwidth_kbps: 50250.31595895948
     training_delay_s: '8.0'
+    computation_time_ms:
+      mobile_device: 8000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_146
   trainer_147:
@@ -1322,6 +1760,9 @@ trainers:
     compute_ms_per_sample: 140.0
     bandwidth_kbps: 13882.365038088128
     training_delay_s: '29.0'
+    computation_time_ms:
+      mobile_device: 29000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_147
   trainer_148:
@@ -1331,6 +1772,9 @@ trainers:
     compute_ms_per_sample: 56.0
     bandwidth_kbps: 1966.5755229307952
     training_delay_s: '10.0'
+    computation_time_ms:
+      mobile_device: 10000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_148
   trainer_149:
@@ -1340,6 +1784,9 @@ trainers:
     compute_ms_per_sample: 24.0
     bandwidth_kbps: 1535.3765967210584
     training_delay_s: '7.0'
+    computation_time_ms:
+      mobile_device: 7000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_149
   trainer_150:
@@ -1349,6 +1796,9 @@ trainers:
     compute_ms_per_sample: 21.0
     bandwidth_kbps: 20191.499024950936
     training_delay_s: '8.0'
+    computation_time_ms:
+      mobile_device: 8000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_150
   trainer_151:
@@ -1358,6 +1808,9 @@ trainers:
     compute_ms_per_sample: 136.0
     bandwidth_kbps: 36433.393285623584
     training_delay_s: '9.0'
+    computation_time_ms:
+      mobile_device: 9000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_151
   trainer_152:
@@ -1367,6 +1820,9 @@ trainers:
     compute_ms_per_sample: 143.0
     bandwidth_kbps: 87075.3198171639
     training_delay_s: '7.0'
+    computation_time_ms:
+      mobile_device: 7000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_152
   trainer_153:
@@ -1376,6 +1832,9 @@ trainers:
     compute_ms_per_sample: 149.0
     bandwidth_kbps: 9629.112850642998
     training_delay_s: '22.0'
+    computation_time_ms:
+      mobile_device: 22000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_153
   trainer_154:
@@ -1385,6 +1844,9 @@ trainers:
     compute_ms_per_sample: 21.0
     bandwidth_kbps: 14506.494272424507
     training_delay_s: '22.0'
+    computation_time_ms:
+      mobile_device: 22000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_154
   trainer_155:
@@ -1394,6 +1856,9 @@ trainers:
     compute_ms_per_sample: 183.0
     bandwidth_kbps: 12636.345755546148
     training_delay_s: '10.0'
+    computation_time_ms:
+      mobile_device: 10000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_155
   trainer_156:
@@ -1403,6 +1868,9 @@ trainers:
     compute_ms_per_sample: 24.0
     bandwidth_kbps: 1696.4310543229876
     training_delay_s: '4.0'
+    computation_time_ms:
+      mobile_device: 4000.0
+      gpu_a40: 200.0
     speed_class: fast
     mobiperf_device_id: device_156
   trainer_157:
@@ -1412,6 +1880,9 @@ trainers:
     compute_ms_per_sample: 31.0
     bandwidth_kbps: 1380.6223618385432
     training_delay_s: '3.0'
+    computation_time_ms:
+      mobile_device: 3000.0
+      gpu_a40: 200.0
     speed_class: fast
     mobiperf_device_id: device_157
   trainer_158:
@@ -1421,6 +1892,9 @@ trainers:
     compute_ms_per_sample: 21.0
     bandwidth_kbps: 29916.861414634146
     training_delay_s: '32.0'
+    computation_time_ms:
+      mobile_device: 32000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_158
   trainer_159:
@@ -1430,6 +1904,9 @@ trainers:
     compute_ms_per_sample: 174.0
     bandwidth_kbps: 2621.5871497118596
     training_delay_s: '3.0'
+    computation_time_ms:
+      mobile_device: 3000.0
+      gpu_a40: 200.0
     speed_class: fast
     mobiperf_device_id: device_159
   trainer_160:
@@ -1439,6 +1916,9 @@ trainers:
     compute_ms_per_sample: 56.0
     bandwidth_kbps: 36701.71338549243
     training_delay_s: '12.0'
+    computation_time_ms:
+      mobile_device: 12000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_160
   trainer_161:
@@ -1448,6 +1928,9 @@ trainers:
     compute_ms_per_sample: 19.0
     bandwidth_kbps: 2725.2003691612053
     training_delay_s: '8.0'
+    computation_time_ms:
+      mobile_device: 8000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_161
   trainer_162:
@@ -1457,6 +1940,9 @@ trainers:
     compute_ms_per_sample: 42.0
     bandwidth_kbps: 3370.4545642706166
     training_delay_s: '9.0'
+    computation_time_ms:
+      mobile_device: 9000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_162
   trainer_163:
@@ -1466,6 +1952,9 @@ trainers:
     compute_ms_per_sample: 51.0
     bandwidth_kbps: 1136.4121868672014
     training_delay_s: '10.0'
+    computation_time_ms:
+      mobile_device: 10000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_163
   trainer_164:
@@ -1475,6 +1964,9 @@ trainers:
     compute_ms_per_sample: 27.0
     bandwidth_kbps: 2855.518125543935
     training_delay_s: '5.0'
+    computation_time_ms:
+      mobile_device: 5000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_164
   trainer_165:
@@ -1484,6 +1976,9 @@ trainers:
     compute_ms_per_sample: 18.0
     bandwidth_kbps: 12815.720432094939
     training_delay_s: '16.0'
+    computation_time_ms:
+      mobile_device: 16000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_165
   trainer_166:
@@ -1493,6 +1988,9 @@ trainers:
     compute_ms_per_sample: 148.0
     bandwidth_kbps: 12963.324102944245
     training_delay_s: '4.0'
+    computation_time_ms:
+      mobile_device: 4000.0
+      gpu_a40: 200.0
     speed_class: fast
     mobiperf_device_id: device_166
   trainer_167:
@@ -1502,6 +2000,9 @@ trainers:
     compute_ms_per_sample: 176.0
     bandwidth_kbps: 3370.4545642706166
     training_delay_s: '2.0'
+    computation_time_ms:
+      mobile_device: 2000.0
+      gpu_a40: 200.0
     speed_class: fast
     mobiperf_device_id: device_167
   trainer_168:
@@ -1511,6 +2012,9 @@ trainers:
     compute_ms_per_sample: 136.0
     bandwidth_kbps: 9629.112850642998
     training_delay_s: '25.0'
+    computation_time_ms:
+      mobile_device: 25000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_168
   trainer_169:
@@ -1520,6 +2024,9 @@ trainers:
     compute_ms_per_sample: 154.0
     bandwidth_kbps: 31618.446460295465
     training_delay_s: '6.0'
+    computation_time_ms:
+      mobile_device: 6000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_169
   trainer_170:
@@ -1529,6 +2036,9 @@ trainers:
     compute_ms_per_sample: 64.0
     bandwidth_kbps: 5232.342020239354
     training_delay_s: '23.0'
+    computation_time_ms:
+      mobile_device: 23000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_170
   trainer_171:
@@ -1538,6 +2048,9 @@ trainers:
     compute_ms_per_sample: 21.0
     bandwidth_kbps: 132721.63279259493
     training_delay_s: '9.0'
+    computation_time_ms:
+      mobile_device: 9000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_171
   trainer_172:
@@ -1547,6 +2060,9 @@ trainers:
     compute_ms_per_sample: 134.0
     bandwidth_kbps: 2492.295708258692
     training_delay_s: '7.0'
+    computation_time_ms:
+      mobile_device: 7000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_172
   trainer_173:
@@ -1556,6 +2072,9 @@ trainers:
     compute_ms_per_sample: 168.0
     bandwidth_kbps: 4730.815972240296
     training_delay_s: '5.0'
+    computation_time_ms:
+      mobile_device: 5000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_173
   trainer_174:
@@ -1565,6 +2084,9 @@ trainers:
     compute_ms_per_sample: 18.0
     bandwidth_kbps: 6399.877029981482
     training_delay_s: '21.0'
+    computation_time_ms:
+      mobile_device: 21000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_174
   trainer_175:
@@ -1574,6 +2096,9 @@ trainers:
     compute_ms_per_sample: 54.0
     bandwidth_kbps: 2401.1727463733982
     training_delay_s: '18.0'
+    computation_time_ms:
+      mobile_device: 18000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_175
   trainer_176:
@@ -1583,6 +2108,9 @@ trainers:
     compute_ms_per_sample: 149.0
     bandwidth_kbps: 6659.027482343811
     training_delay_s: '4.0'
+    computation_time_ms:
+      mobile_device: 4000.0
+      gpu_a40: 200.0
     speed_class: fast
     mobiperf_device_id: device_176
   trainer_177:
@@ -1592,6 +2120,9 @@ trainers:
     compute_ms_per_sample: 51.0
     bandwidth_kbps: 14630.406878190872
     training_delay_s: '3.0'
+    computation_time_ms:
+      mobile_device: 3000.0
+      gpu_a40: 200.0
     speed_class: fast
     mobiperf_device_id: device_177
   trainer_178:
@@ -1601,6 +2132,9 @@ trainers:
     compute_ms_per_sample: 23.0
     bandwidth_kbps: 10181.845082899526
     training_delay_s: '7.0'
+    computation_time_ms:
+      mobile_device: 7000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_178
   trainer_179:
@@ -1610,6 +2144,9 @@ trainers:
     compute_ms_per_sample: 72.0
     bandwidth_kbps: 4742.638170810537
     training_delay_s: '24.0'
+    computation_time_ms:
+      mobile_device: 24000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_179
   trainer_180:
@@ -1619,6 +2156,9 @@ trainers:
     compute_ms_per_sample: 41.0
     bandwidth_kbps: 6387.07229516645
     training_delay_s: '16.0'
+    computation_time_ms:
+      mobile_device: 16000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_180
   trainer_181:
@@ -1628,6 +2168,9 @@ trainers:
     compute_ms_per_sample: 192.0
     bandwidth_kbps: 24004.736574978717
     training_delay_s: '56.0'
+    computation_time_ms:
+      mobile_device: 56000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_181
   trainer_182:
@@ -1637,6 +2180,9 @@ trainers:
     compute_ms_per_sample: 23.0
     bandwidth_kbps: 3843.4681731702744
     training_delay_s: '19.0'
+    computation_time_ms:
+      mobile_device: 19000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_182
   trainer_183:
@@ -1646,6 +2192,9 @@ trainers:
     compute_ms_per_sample: 21.0
     bandwidth_kbps: 2124.3843013483306
     training_delay_s: '6.0'
+    computation_time_ms:
+      mobile_device: 6000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_183
   trainer_184:
@@ -1655,6 +2204,9 @@ trainers:
     compute_ms_per_sample: 192.0
     bandwidth_kbps: 4652.290392827601
     training_delay_s: '7.0'
+    computation_time_ms:
+      mobile_device: 7000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_184
   trainer_185:
@@ -1664,6 +2216,9 @@ trainers:
     compute_ms_per_sample: 154.0
     bandwidth_kbps: 8170.928806526902
     training_delay_s: '16.0'
+    computation_time_ms:
+      mobile_device: 16000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_185
   trainer_186:
@@ -1673,6 +2228,9 @@ trainers:
     compute_ms_per_sample: 162.0
     bandwidth_kbps: 1976.82897458832
     training_delay_s: '11.0'
+    computation_time_ms:
+      mobile_device: 11000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_186
   trainer_187:
@@ -1682,6 +2240,9 @@ trainers:
     compute_ms_per_sample: 117.0
     bandwidth_kbps: 4757.925003607145
     training_delay_s: '31.0'
+    computation_time_ms:
+      mobile_device: 31000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_187
   trainer_188:
@@ -1691,6 +2252,9 @@ trainers:
     compute_ms_per_sample: 41.0
     bandwidth_kbps: 14506.494272424507
     training_delay_s: '8.0'
+    computation_time_ms:
+      mobile_device: 8000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_188
   trainer_189:
@@ -1700,6 +2264,9 @@ trainers:
     compute_ms_per_sample: 15.0
     bandwidth_kbps: 20732.67059038755
     training_delay_s: '18.0'
+    computation_time_ms:
+      mobile_device: 18000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_189
   trainer_190:
@@ -1709,6 +2276,9 @@ trainers:
     compute_ms_per_sample: 23.0
     bandwidth_kbps: 28472.16013839707
     training_delay_s: '4.0'
+    computation_time_ms:
+      mobile_device: 4000.0
+      gpu_a40: 200.0
     speed_class: fast
     mobiperf_device_id: device_190
   trainer_191:
@@ -1718,6 +2288,9 @@ trainers:
     compute_ms_per_sample: 23.0
     bandwidth_kbps: 1393.2277009351494
     training_delay_s: '13.0'
+    computation_time_ms:
+      mobile_device: 13000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_191
   trainer_192:
@@ -1727,6 +2300,9 @@ trainers:
     compute_ms_per_sample: 23.0
     bandwidth_kbps: 86384.97278932433
     training_delay_s: '17.0'
+    computation_time_ms:
+      mobile_device: 17000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_192
   trainer_193:
@@ -1736,6 +2312,9 @@ trainers:
     compute_ms_per_sample: 25.0
     bandwidth_kbps: 57906.55068629575
     training_delay_s: '2.0'
+    computation_time_ms:
+      mobile_device: 2000.0
+      gpu_a40: 200.0
     speed_class: fast
     mobiperf_device_id: device_193
   trainer_194:
@@ -1745,6 +2324,9 @@ trainers:
     compute_ms_per_sample: 137.0
     bandwidth_kbps: 14711.449275497373
     training_delay_s: '6.0'
+    computation_time_ms:
+      mobile_device: 6000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_194
   trainer_195:
@@ -1754,6 +2336,9 @@ trainers:
     compute_ms_per_sample: 25.0
     bandwidth_kbps: 4803.596449228287
     training_delay_s: '8.0'
+    computation_time_ms:
+      mobile_device: 8000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_195
   trainer_196:
@@ -1763,6 +2348,9 @@ trainers:
     compute_ms_per_sample: 175.0
     bandwidth_kbps: 7532.024856534167
     training_delay_s: '13.0'
+    computation_time_ms:
+      mobile_device: 13000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_196
   trainer_197:
@@ -1772,6 +2360,9 @@ trainers:
     compute_ms_per_sample: 189.0
     bandwidth_kbps: 6399.877029981482
     training_delay_s: '6.0'
+    computation_time_ms:
+      mobile_device: 6000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_197
   trainer_198:
@@ -1781,6 +2372,9 @@ trainers:
     compute_ms_per_sample: 24.0
     bandwidth_kbps: 2860.405835654235
     training_delay_s: '7.0'
+    computation_time_ms:
+      mobile_device: 7000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_198
   trainer_199:
@@ -1790,6 +2384,9 @@ trainers:
     compute_ms_per_sample: 25.0
     bandwidth_kbps: 6100.98200438069
     training_delay_s: '9.0'
+    computation_time_ms:
+      mobile_device: 9000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_199
   trainer_200:
@@ -1799,6 +2396,9 @@ trainers:
     compute_ms_per_sample: 50.0
     bandwidth_kbps: 4571.163620535417
     training_delay_s: '6.0'
+    computation_time_ms:
+      mobile_device: 6000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_200
   trainer_201:
@@ -1808,6 +2408,9 @@ trainers:
     compute_ms_per_sample: 18.0
     bandwidth_kbps: 2711.8379534614946
     training_delay_s: '18.0'
+    computation_time_ms:
+      mobile_device: 18000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_201
   trainer_202:
@@ -1817,6 +2420,9 @@ trainers:
     compute_ms_per_sample: 23.0
     bandwidth_kbps: 4456.184635923774
     training_delay_s: '2.0'
+    computation_time_ms:
+      mobile_device: 2000.0
+      gpu_a40: 200.0
     speed_class: fast
     mobiperf_device_id: device_202
   trainer_203:
@@ -1826,6 +2432,9 @@ trainers:
     compute_ms_per_sample: 189.0
     bandwidth_kbps: 5648.109619499134
     training_delay_s: '9.0'
+    computation_time_ms:
+      mobile_device: 9000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_203
   trainer_204:
@@ -1835,6 +2444,9 @@ trainers:
     compute_ms_per_sample: 27.0
     bandwidth_kbps: 2253.335774792474
     training_delay_s: '21.0'
+    computation_time_ms:
+      mobile_device: 21000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_204
   trainer_205:
@@ -1844,6 +2456,9 @@ trainers:
     compute_ms_per_sample: 19.0
     bandwidth_kbps: 1990.0882973490488
     training_delay_s: '24.0'
+    computation_time_ms:
+      mobile_device: 24000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_205
   trainer_206:
@@ -1853,6 +2468,9 @@ trainers:
     compute_ms_per_sample: 134.0
     bandwidth_kbps: 6074.702413493102
     training_delay_s: '8.0'
+    computation_time_ms:
+      mobile_device: 8000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_206
   trainer_207:
@@ -1862,6 +2480,9 @@ trainers:
     compute_ms_per_sample: 155.0
     bandwidth_kbps: 26614.495526381503
     training_delay_s: '14.0'
+    computation_time_ms:
+      mobile_device: 14000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_207
   trainer_208:
@@ -1871,6 +2492,9 @@ trainers:
     compute_ms_per_sample: 148.0
     bandwidth_kbps: 26614.495526381503
     training_delay_s: '6.0'
+    computation_time_ms:
+      mobile_device: 6000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_208
   trainer_209:
@@ -1880,6 +2504,9 @@ trainers:
     compute_ms_per_sample: 56.0
     bandwidth_kbps: 2230.4954217010277
     training_delay_s: '7.0'
+    computation_time_ms:
+      mobile_device: 7000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_209
   trainer_210:
@@ -1889,6 +2516,9 @@ trainers:
     compute_ms_per_sample: 23.0
     bandwidth_kbps: 5961.660790092723
     training_delay_s: '4.0'
+    computation_time_ms:
+      mobile_device: 4000.0
+      gpu_a40: 200.0
     speed_class: fast
     mobiperf_device_id: device_210
   trainer_211:
@@ -1898,6 +2528,9 @@ trainers:
     compute_ms_per_sample: 173.0
     bandwidth_kbps: 29916.861414634146
     training_delay_s: '5.0'
+    computation_time_ms:
+      mobile_device: 5000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_211
   trainer_212:
@@ -1907,6 +2540,9 @@ trainers:
     compute_ms_per_sample: 25.0
     bandwidth_kbps: 4161.290119724033
     training_delay_s: '14.0'
+    computation_time_ms:
+      mobile_device: 14000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_212
   trainer_213:
@@ -1916,6 +2552,9 @@ trainers:
     compute_ms_per_sample: 25.0
     bandwidth_kbps: 12963.324102944245
     training_delay_s: '12.0'
+    computation_time_ms:
+      mobile_device: 12000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_213
   trainer_214:
@@ -1925,6 +2564,9 @@ trainers:
     compute_ms_per_sample: 19.0
     bandwidth_kbps: 1926.1046157499825
     training_delay_s: '8.0'
+    computation_time_ms:
+      mobile_device: 8000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_214
   trainer_215:
@@ -1934,6 +2576,9 @@ trainers:
     compute_ms_per_sample: 15.0
     bandwidth_kbps: 4036.5686298609216
     training_delay_s: '5.0'
+    computation_time_ms:
+      mobile_device: 5000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_215
   trainer_216:
@@ -1943,6 +2588,9 @@ trainers:
     compute_ms_per_sample: 18.0
     bandwidth_kbps: 4632.768910167103
     training_delay_s: '4.0'
+    computation_time_ms:
+      mobile_device: 4000.0
+      gpu_a40: 200.0
     speed_class: fast
     mobiperf_device_id: device_216
   trainer_217:
@@ -1952,6 +2600,9 @@ trainers:
     compute_ms_per_sample: 28.0
     bandwidth_kbps: 3859.9434580440084
     training_delay_s: '28.0'
+    computation_time_ms:
+      mobile_device: 28000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_217
   trainer_218:
@@ -1961,6 +2612,9 @@ trainers:
     compute_ms_per_sample: 41.0
     bandwidth_kbps: 44803.7380516996
     training_delay_s: '31.0'
+    computation_time_ms:
+      mobile_device: 31000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_218
   trainer_219:
@@ -1970,6 +2624,9 @@ trainers:
     compute_ms_per_sample: 23.0
     bandwidth_kbps: 36433.393285623584
     training_delay_s: '11.0'
+    computation_time_ms:
+      mobile_device: 11000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_219
   trainer_220:
@@ -1979,6 +2636,9 @@ trainers:
     compute_ms_per_sample: 46.0
     bandwidth_kbps: 10473.36639536247
     training_delay_s: '26.0'
+    computation_time_ms:
+      mobile_device: 26000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_220
   trainer_221:
@@ -1988,6 +2648,9 @@ trainers:
     compute_ms_per_sample: 24.0
     bandwidth_kbps: 1368.2464709694145
     training_delay_s: '9.0'
+    computation_time_ms:
+      mobile_device: 9000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_221
   trainer_222:
@@ -1997,6 +2660,9 @@ trainers:
     compute_ms_per_sample: 28.0
     bandwidth_kbps: 14273.427466117982
     training_delay_s: '13.0'
+    computation_time_ms:
+      mobile_device: 13000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_222
   trainer_223:
@@ -2006,6 +2672,9 @@ trainers:
     compute_ms_per_sample: 154.0
     bandwidth_kbps: 8869.773157203956
     training_delay_s: '14.0'
+    computation_time_ms:
+      mobile_device: 14000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_223
   trainer_224:
@@ -2015,6 +2684,9 @@ trainers:
     compute_ms_per_sample: 154.0
     bandwidth_kbps: 25923.65065115265
     training_delay_s: '12.0'
+    computation_time_ms:
+      mobile_device: 12000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_224
   trainer_225:
@@ -2024,6 +2696,9 @@ trainers:
     compute_ms_per_sample: 15.0
     bandwidth_kbps: 6384.429196498908
     training_delay_s: '17.0'
+    computation_time_ms:
+      mobile_device: 17000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_225
   trainer_226:
@@ -2033,6 +2708,9 @@ trainers:
     compute_ms_per_sample: 24.0
     bandwidth_kbps: 4849.641475513536
     training_delay_s: '13.0'
+    computation_time_ms:
+      mobile_device: 13000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_226
   trainer_227:
@@ -2042,6 +2720,9 @@ trainers:
     compute_ms_per_sample: 23.0
     bandwidth_kbps: 63892.25865924355
     training_delay_s: '5.0'
+    computation_time_ms:
+      mobile_device: 5000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_227
   trainer_228:
@@ -2051,6 +2732,9 @@ trainers:
     compute_ms_per_sample: 31.0
     bandwidth_kbps: 14630.406878190872
     training_delay_s: '5.0'
+    computation_time_ms:
+      mobile_device: 5000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_228
   trainer_229:
@@ -2060,6 +2744,9 @@ trainers:
     compute_ms_per_sample: 173.0
     bandwidth_kbps: 1931.8958161206792
     training_delay_s: '12.0'
+    computation_time_ms:
+      mobile_device: 12000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_229
   trainer_230:
@@ -2069,6 +2756,9 @@ trainers:
     compute_ms_per_sample: 22.0
     bandwidth_kbps: 14245.531261193886
     training_delay_s: '4.0'
+    computation_time_ms:
+      mobile_device: 4000.0
+      gpu_a40: 200.0
     speed_class: fast
     mobiperf_device_id: device_230
   trainer_231:
@@ -2078,6 +2768,9 @@ trainers:
     compute_ms_per_sample: 176.0
     bandwidth_kbps: 93130.95904074324
     training_delay_s: '2.0'
+    computation_time_ms:
+      mobile_device: 2000.0
+      gpu_a40: 200.0
     speed_class: fast
     mobiperf_device_id: device_231
   trainer_232:
@@ -2087,6 +2780,9 @@ trainers:
     compute_ms_per_sample: 28.0
     bandwidth_kbps: 26614.495526381503
     training_delay_s: '27.0'
+    computation_time_ms:
+      mobile_device: 27000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_232
   trainer_233:
@@ -2096,6 +2792,9 @@ trainers:
     compute_ms_per_sample: 136.0
     bandwidth_kbps: 82504.44631466508
     training_delay_s: '19.0'
+    computation_time_ms:
+      mobile_device: 19000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_233
   trainer_234:
@@ -2105,6 +2804,9 @@ trainers:
     compute_ms_per_sample: 42.0
     bandwidth_kbps: 9143.630802759213
     training_delay_s: '12.0'
+    computation_time_ms:
+      mobile_device: 12000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_234
   trainer_235:
@@ -2114,6 +2816,9 @@ trainers:
     compute_ms_per_sample: 25.0
     bandwidth_kbps: 6074.702413493102
     training_delay_s: '6.0'
+    computation_time_ms:
+      mobile_device: 6000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_235
   trainer_236:
@@ -2123,6 +2828,9 @@ trainers:
     compute_ms_per_sample: 21.0
     bandwidth_kbps: 13876.22062689568
     training_delay_s: '7.0'
+    computation_time_ms:
+      mobile_device: 7000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_236
   trainer_237:
@@ -2132,6 +2840,9 @@ trainers:
     compute_ms_per_sample: 18.0
     bandwidth_kbps: 3146.9061485778047
     training_delay_s: '12.0'
+    computation_time_ms:
+      mobile_device: 12000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_237
   trainer_238:
@@ -2141,6 +2852,9 @@ trainers:
     compute_ms_per_sample: 27.0
     bandwidth_kbps: 38791.73606918406
     training_delay_s: '5.0'
+    computation_time_ms:
+      mobile_device: 5000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_238
   trainer_239:
@@ -2150,6 +2864,9 @@ trainers:
     compute_ms_per_sample: 24.0
     bandwidth_kbps: 29106.497277899587
     training_delay_s: '14.0'
+    computation_time_ms:
+      mobile_device: 14000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_239
   trainer_240:
@@ -2159,6 +2876,9 @@ trainers:
     compute_ms_per_sample: 21.0
     bandwidth_kbps: 2588.825109754843
     training_delay_s: '5.0'
+    computation_time_ms:
+      mobile_device: 5000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_240
   trainer_241:
@@ -2168,6 +2888,9 @@ trainers:
     compute_ms_per_sample: 23.0
     bandwidth_kbps: 1135.91448815284
     training_delay_s: '5.0'
+    computation_time_ms:
+      mobile_device: 5000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_241
   trainer_242:
@@ -2177,6 +2900,9 @@ trainers:
     compute_ms_per_sample: 25.0
     bandwidth_kbps: 1909.398419353762
     training_delay_s: '9.0'
+    computation_time_ms:
+      mobile_device: 9000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_242
   trainer_243:
@@ -2186,6 +2912,9 @@ trainers:
     compute_ms_per_sample: 27.0
     bandwidth_kbps: 1168.6454781036323
     training_delay_s: '6.0'
+    computation_time_ms:
+      mobile_device: 6000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_243
   trainer_244:
@@ -2195,6 +2924,9 @@ trainers:
     compute_ms_per_sample: 24.0
     bandwidth_kbps: 2668.8476992876217
     training_delay_s: '8.0'
+    computation_time_ms:
+      mobile_device: 8000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_244
   trainer_245:
@@ -2204,6 +2936,9 @@ trainers:
     compute_ms_per_sample: 24.0
     bandwidth_kbps: 6928.077161758286
     training_delay_s: '20.0'
+    computation_time_ms:
+      mobile_device: 20000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_245
   trainer_246:
@@ -2213,6 +2948,9 @@ trainers:
     compute_ms_per_sample: 19.0
     bandwidth_kbps: 10445.742857153104
     training_delay_s: '5.0'
+    computation_time_ms:
+      mobile_device: 5000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_246
   trainer_247:
@@ -2222,6 +2960,9 @@ trainers:
     compute_ms_per_sample: 50.0
     bandwidth_kbps: 5575.836092624551
     training_delay_s: '23.0'
+    computation_time_ms:
+      mobile_device: 23000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_247
   trainer_248:
@@ -2231,6 +2972,9 @@ trainers:
     compute_ms_per_sample: 15.0
     bandwidth_kbps: 4837.260171862482
     training_delay_s: '12.0'
+    computation_time_ms:
+      mobile_device: 12000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_248
   trainer_249:
@@ -2240,6 +2984,9 @@ trainers:
     compute_ms_per_sample: 24.0
     bandwidth_kbps: 1702.585372487073
     training_delay_s: '2.0'
+    computation_time_ms:
+      mobile_device: 2000.0
+      gpu_a40: 200.0
     speed_class: fast
     mobiperf_device_id: device_249
   trainer_250:
@@ -2249,6 +2996,9 @@ trainers:
     compute_ms_per_sample: 136.0
     bandwidth_kbps: 2253.335774792474
     training_delay_s: '10.0'
+    computation_time_ms:
+      mobile_device: 10000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_250
   trainer_251:
@@ -2258,6 +3008,9 @@ trainers:
     compute_ms_per_sample: 22.0
     bandwidth_kbps: 6924.407283130328
     training_delay_s: '31.0'
+    computation_time_ms:
+      mobile_device: 31000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_251
   trainer_252:
@@ -2267,6 +3020,9 @@ trainers:
     compute_ms_per_sample: 31.0
     bandwidth_kbps: 4798.764414377165
     training_delay_s: '6.0'
+    computation_time_ms:
+      mobile_device: 6000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_252
   trainer_253:
@@ -2276,6 +3032,9 @@ trainers:
     compute_ms_per_sample: 145.0
     bandwidth_kbps: 8869.773157203956
     training_delay_s: '12.0'
+    computation_time_ms:
+      mobile_device: 12000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_253
   trainer_254:
@@ -2285,6 +3044,9 @@ trainers:
     compute_ms_per_sample: 144.0
     bandwidth_kbps: 1702.585372487073
     training_delay_s: '11.0'
+    computation_time_ms:
+      mobile_device: 11000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_254
   trainer_255:
@@ -2294,6 +3056,9 @@ trainers:
     compute_ms_per_sample: 19.0
     bandwidth_kbps: 3482.216155841956
     training_delay_s: '5.0'
+    computation_time_ms:
+      mobile_device: 5000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_255
   trainer_256:
@@ -2303,6 +3068,9 @@ trainers:
     compute_ms_per_sample: 189.0
     bandwidth_kbps: 1966.5755229307952
     training_delay_s: '11.0'
+    computation_time_ms:
+      mobile_device: 11000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_256
   trainer_257:
@@ -2312,6 +3080,9 @@ trainers:
     compute_ms_per_sample: 72.0
     bandwidth_kbps: 8407.646888497546
     training_delay_s: '3.0'
+    computation_time_ms:
+      mobile_device: 3000.0
+      gpu_a40: 200.0
     speed_class: fast
     mobiperf_device_id: device_257
   trainer_258:
@@ -2321,6 +3092,9 @@ trainers:
     compute_ms_per_sample: 23.0
     bandwidth_kbps: 1986.7806861356996
     training_delay_s: '23.0'
+    computation_time_ms:
+      mobile_device: 23000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_258
   trainer_259:
@@ -2330,6 +3104,9 @@ trainers:
     compute_ms_per_sample: 39.0
     bandwidth_kbps: 6932.448696588237
     training_delay_s: '16.0'
+    computation_time_ms:
+      mobile_device: 16000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_259
   trainer_260:
@@ -2339,6 +3116,9 @@ trainers:
     compute_ms_per_sample: 148.0
     bandwidth_kbps: 1867.0084973720475
     training_delay_s: '5.0'
+    computation_time_ms:
+      mobile_device: 5000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_260
   trainer_261:
@@ -2348,6 +3128,9 @@ trainers:
     compute_ms_per_sample: 136.0
     bandwidth_kbps: 32545.573620752573
     training_delay_s: '10.0'
+    computation_time_ms:
+      mobile_device: 10000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_261
   trainer_262:
@@ -2357,6 +3140,9 @@ trainers:
     compute_ms_per_sample: 146.0
     bandwidth_kbps: 4596.307662111975
     training_delay_s: '28.0'
+    computation_time_ms:
+      mobile_device: 28000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_262
   trainer_263:
@@ -2366,6 +3152,9 @@ trainers:
     compute_ms_per_sample: 172.0
     bandwidth_kbps: 12177.136944879272
     training_delay_s: '2.0'
+    computation_time_ms:
+      mobile_device: 2000.0
+      gpu_a40: 200.0
     speed_class: fast
     mobiperf_device_id: device_263
   trainer_264:
@@ -2375,6 +3164,9 @@ trainers:
     compute_ms_per_sample: 23.0
     bandwidth_kbps: 8143.750181701445
     training_delay_s: '29.0'
+    computation_time_ms:
+      mobile_device: 29000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_264
   trainer_265:
@@ -2384,6 +3176,9 @@ trainers:
     compute_ms_per_sample: 150.0
     bandwidth_kbps: 10445.742857153104
     training_delay_s: '16.0'
+    computation_time_ms:
+      mobile_device: 16000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_265
   trainer_266:
@@ -2393,6 +3188,9 @@ trainers:
     compute_ms_per_sample: 24.0
     bandwidth_kbps: 8555.352771044612
     training_delay_s: '12.0'
+    computation_time_ms:
+      mobile_device: 12000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_266
   trainer_267:
@@ -2402,6 +3200,9 @@ trainers:
     compute_ms_per_sample: 193.0
     bandwidth_kbps: 23291.68410175639
     training_delay_s: '19.0'
+    computation_time_ms:
+      mobile_device: 19000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_267
   trainer_268:
@@ -2411,6 +3212,9 @@ trainers:
     compute_ms_per_sample: 41.0
     bandwidth_kbps: 1708.327324406004
     training_delay_s: '23.0'
+    computation_time_ms:
+      mobile_device: 23000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_268
   trainer_269:
@@ -2420,6 +3224,9 @@ trainers:
     compute_ms_per_sample: 19.0
     bandwidth_kbps: 12844.302284037876
     training_delay_s: '3.0'
+    computation_time_ms:
+      mobile_device: 3000.0
+      gpu_a40: 200.0
     speed_class: fast
     mobiperf_device_id: device_269
   trainer_270:
@@ -2429,6 +3236,9 @@ trainers:
     compute_ms_per_sample: 19.0
     bandwidth_kbps: 13702.634065353626
     training_delay_s: '7.0'
+    computation_time_ms:
+      mobile_device: 7000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_270
   trainer_271:
@@ -2438,6 +3248,9 @@ trainers:
     compute_ms_per_sample: 154.0
     bandwidth_kbps: 12113.274113975893
     training_delay_s: '3.0'
+    computation_time_ms:
+      mobile_device: 3000.0
+      gpu_a40: 200.0
     speed_class: fast
     mobiperf_device_id: device_271
   trainer_272:
@@ -2447,6 +3260,9 @@ trainers:
     compute_ms_per_sample: 148.0
     bandwidth_kbps: 4789.241063674561
     training_delay_s: '10.0'
+    computation_time_ms:
+      mobile_device: 10000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_272
   trainer_273:
@@ -2456,6 +3272,9 @@ trainers:
     compute_ms_per_sample: 27.0
     bandwidth_kbps: 55447.59250578869
     training_delay_s: '40.0'
+    computation_time_ms:
+      mobile_device: 40000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_273
   trainer_274:
@@ -2465,6 +3284,9 @@ trainers:
     compute_ms_per_sample: 22.0
     bandwidth_kbps: 5320.409089720225
     training_delay_s: '15.0'
+    computation_time_ms:
+      mobile_device: 15000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_274
   trainer_275:
@@ -2474,6 +3296,9 @@ trainers:
     compute_ms_per_sample: 154.0
     bandwidth_kbps: 8727.591590166872
     training_delay_s: '4.0'
+    computation_time_ms:
+      mobile_device: 4000.0
+      gpu_a40: 200.0
     speed_class: fast
     mobiperf_device_id: device_275
   trainer_276:
@@ -2483,6 +3308,9 @@ trainers:
     compute_ms_per_sample: 24.0
     bandwidth_kbps: 10079.288768025888
     training_delay_s: '17.0'
+    computation_time_ms:
+      mobile_device: 17000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_276
   trainer_277:
@@ -2492,6 +3320,9 @@ trainers:
     compute_ms_per_sample: 155.0
     bandwidth_kbps: 9847.506913265517
     training_delay_s: '9.0'
+    computation_time_ms:
+      mobile_device: 9000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_277
   trainer_278:
@@ -2501,6 +3332,9 @@ trainers:
     compute_ms_per_sample: 41.0
     bandwidth_kbps: 4145.887289843971
     training_delay_s: '11.0'
+    computation_time_ms:
+      mobile_device: 11000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_278
   trainer_279:
@@ -2510,6 +3344,9 @@ trainers:
     compute_ms_per_sample: 22.0
     bandwidth_kbps: 38210.3052487804
     training_delay_s: '2.0'
+    computation_time_ms:
+      mobile_device: 2000.0
+      gpu_a40: 200.0
     speed_class: fast
     mobiperf_device_id: device_279
   trainer_280:
@@ -2519,6 +3356,9 @@ trainers:
     compute_ms_per_sample: 23.0
     bandwidth_kbps: 5320.409089720225
     training_delay_s: '14.0'
+    computation_time_ms:
+      mobile_device: 14000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_280
   trainer_281:
@@ -2528,6 +3368,9 @@ trainers:
     compute_ms_per_sample: 23.0
     bandwidth_kbps: 2904.5589866692726
     training_delay_s: '4.0'
+    computation_time_ms:
+      mobile_device: 4000.0
+      gpu_a40: 200.0
     speed_class: fast
     mobiperf_device_id: device_281
   trainer_282:
@@ -2537,6 +3380,9 @@ trainers:
     compute_ms_per_sample: 44.0
     bandwidth_kbps: 3791.2377054622675
     training_delay_s: '4.0'
+    computation_time_ms:
+      mobile_device: 4000.0
+      gpu_a40: 200.0
     speed_class: fast
     mobiperf_device_id: device_282
   trainer_283:
@@ -2546,6 +3392,9 @@ trainers:
     compute_ms_per_sample: 176.0
     bandwidth_kbps: 13371.139055633053
     training_delay_s: '21.0'
+    computation_time_ms:
+      mobile_device: 21000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_283
   trainer_284:
@@ -2555,6 +3404,9 @@ trainers:
     compute_ms_per_sample: 191.0
     bandwidth_kbps: 7714.494835917806
     training_delay_s: '4.0'
+    computation_time_ms:
+      mobile_device: 4000.0
+      gpu_a40: 200.0
     speed_class: fast
     mobiperf_device_id: device_284
   trainer_285:
@@ -2564,6 +3416,9 @@ trainers:
     compute_ms_per_sample: 27.0
     bandwidth_kbps: 6718.417727308594
     training_delay_s: '34.0'
+    computation_time_ms:
+      mobile_device: 34000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_285
   trainer_286:
@@ -2573,6 +3428,9 @@ trainers:
     compute_ms_per_sample: 56.0
     bandwidth_kbps: 1931.2100827831061
     training_delay_s: '8.0'
+    computation_time_ms:
+      mobile_device: 8000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_286
   trainer_287:
@@ -2582,6 +3440,9 @@ trainers:
     compute_ms_per_sample: 143.0
     bandwidth_kbps: 35589.54791311136
     training_delay_s: '12.0'
+    computation_time_ms:
+      mobile_device: 12000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_287
   trainer_288:
@@ -2591,6 +3452,9 @@ trainers:
     compute_ms_per_sample: 30.0
     bandwidth_kbps: 3431.6140031107498
     training_delay_s: '4.0'
+    computation_time_ms:
+      mobile_device: 4000.0
+      gpu_a40: 200.0
     speed_class: fast
     mobiperf_device_id: device_288
   trainer_289:
@@ -2600,6 +3464,9 @@ trainers:
     compute_ms_per_sample: 159.0
     bandwidth_kbps: 2903.641246394103
     training_delay_s: '4.0'
+    computation_time_ms:
+      mobile_device: 4000.0
+      gpu_a40: 200.0
     speed_class: fast
     mobiperf_device_id: device_289
   trainer_290:
@@ -2609,6 +3476,9 @@ trainers:
     compute_ms_per_sample: 176.0
     bandwidth_kbps: 6928.077161758286
     training_delay_s: '15.0'
+    computation_time_ms:
+      mobile_device: 15000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_290
   trainer_291:
@@ -2618,6 +3488,9 @@ trainers:
     compute_ms_per_sample: 24.0
     bandwidth_kbps: 5961.660790092723
     training_delay_s: '23.0'
+    computation_time_ms:
+      mobile_device: 23000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_291
   trainer_292:
@@ -2627,6 +3500,9 @@ trainers:
     compute_ms_per_sample: 168.0
     bandwidth_kbps: 5961.660790092723
     training_delay_s: '19.0'
+    computation_time_ms:
+      mobile_device: 19000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_292
   trainer_293:
@@ -2636,6 +3512,9 @@ trainers:
     compute_ms_per_sample: 15.0
     bandwidth_kbps: 2230.4954217010277
     training_delay_s: '8.0'
+    computation_time_ms:
+      mobile_device: 8000.0
+      gpu_a40: 200.0
     speed_class: medium
     mobiperf_device_id: device_293
   trainer_294:
@@ -2645,6 +3524,9 @@ trainers:
     compute_ms_per_sample: 22.0
     bandwidth_kbps: 14711.449275497373
     training_delay_s: '4.0'
+    computation_time_ms:
+      mobile_device: 4000.0
+      gpu_a40: 200.0
     speed_class: fast
     mobiperf_device_id: device_294
   trainer_295:
@@ -2654,6 +3536,9 @@ trainers:
     compute_ms_per_sample: 191.0
     bandwidth_kbps: 14273.427466117982
     training_delay_s: '19.0'
+    computation_time_ms:
+      mobile_device: 19000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_295
   trainer_296:
@@ -2663,6 +3548,9 @@ trainers:
     compute_ms_per_sample: 136.0
     bandwidth_kbps: 1016.8808511071711
     training_delay_s: '14.0'
+    computation_time_ms:
+      mobile_device: 14000.0
+      gpu_a40: 200.0
     speed_class: very_slow
     mobiperf_device_id: device_296
   trainer_297:
@@ -2672,6 +3560,9 @@ trainers:
     compute_ms_per_sample: 160.0
     bandwidth_kbps: 2401.1727463733982
     training_delay_s: '9.0'
+    computation_time_ms:
+      mobile_device: 9000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_297
   trainer_298:
@@ -2681,6 +3572,9 @@ trainers:
     compute_ms_per_sample: 15.0
     bandwidth_kbps: 9847.506913265517
     training_delay_s: '12.0'
+    computation_time_ms:
+      mobile_device: 12000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_298
   trainer_299:
@@ -2690,6 +3584,9 @@ trainers:
     compute_ms_per_sample: 41.0
     bandwidth_kbps: 9629.112850642998
     training_delay_s: '9.0'
+    computation_time_ms:
+      mobile_device: 9000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_299
   trainer_300:
@@ -2699,5 +3596,8 @@ trainers:
     compute_ms_per_sample: 32.0
     bandwidth_kbps: 22998.350769230765
     training_delay_s: '11.0'
+    computation_time_ms:
+      mobile_device: 11000.0
+      gpu_a40: 200.0
     speed_class: slow
     mobiperf_device_id: device_300

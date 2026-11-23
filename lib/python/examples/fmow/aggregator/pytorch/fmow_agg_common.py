@@ -39,6 +39,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from fmow.simulation import SatelliteSimulation
 from model import build_model
 from fmow_dataset import FMoWDataset
+from eval_subset import select_eval_indices
 
 def initialize_wandb(fl_type):
     wandb.init(
@@ -97,6 +98,7 @@ class FMoWAggregatorMixin(SatelliteSimulation):
 
         self.device = None
         self.test_loader = None
+        self.eval_max_samples = None
 
         self.learning_rate = self.config.hyperparameters.learning_rate
         self.batch_size = self.config.hyperparameters.batch_size or 16
@@ -123,6 +125,13 @@ class FMoWAggregatorMixin(SatelliteSimulation):
         fmow_dataset = FMoWDataset(self.fmow_cfg.dataset.root_dir)
         fmow_dataset.set_transform(self.fmow_cfg.dataset.image_size)
         test_indices = fmow_dataset.get_split_indices("test").tolist()
+        # Optional fixed random subset (hyperparameters.eval_max_samples). Without it,
+        # non-final evals score only the first 5 unshuffled batches (~80 images).
+        self.eval_max_samples = getattr(self.config.hyperparameters, "eval_max_samples", None)
+        if self.eval_max_samples:
+            seed = getattr(self.config.hyperparameters, "seed", 1234)
+            test_indices = select_eval_indices(test_indices, self.eval_max_samples, seed)
+            logger.info(f"[EVAL_SUBSET] {len(test_indices)} fixed test samples (seed={seed})")
         dataset = data_utils.Subset(fmow_dataset, test_indices)
 
         test_kwargs = {
@@ -161,7 +170,7 @@ class FMoWAggregatorMixin(SatelliteSimulation):
         round_num = self._round
         test_loader, device = self.test_loader, self.device
 
-        max_batches = None if is_last_round else 5
+        max_batches = None if (is_last_round or self.eval_max_samples) else 5
 
         def _job():
             try:
