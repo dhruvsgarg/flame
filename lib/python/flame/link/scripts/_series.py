@@ -84,7 +84,7 @@ def _snr_db(range_km, elev_deg, cfg, freq_ghz):
     noise_dbw = 10.0 * math.log10(
         cfg.physical.boltzmann_j_per_k
         * cfg.ground_station.system_noise_temp_k
-        * cfg.frequency.bandwidth_mhz
+        * cfg.frequency.bandwidth_mhz_for("downlink")
         * 1e6
     )
     return rx_dbw - noise_dbw, fspl, atmos, iono
@@ -101,7 +101,7 @@ def satellite_series(cfg, sat_ecef_km, time_s):
     with visible=False and 100% throughput loss, matching
     flame.link.budget.compute_link_budget.
     """
-    freq, bw = cfg.frequency.downlink_ghz, cfg.frequency.bandwidth_mhz
+    freq, bw = cfg.frequency.downlink_ghz, cfg.frequency.bandwidth_mhz_for("downlink")
     gs = geodetic_to_ecef_km(
         cfg.ground_station.lat_deg,
         cfg.ground_station.lon_deg,
@@ -122,10 +122,10 @@ def satellite_series(cfg, sat_ecef_km, time_s):
 
     alt_k = np.maximum(np.linalg.norm(sat_k, axis=1) - gs_norm, cfg.min_reference_range_km)
     snr_ref, *_ = _snr_db(alt_k, np.full_like(alt_k, 90.0), cfg, freq)
-    tput_ref = _shannon_mbps(snr_ref, bw)
+    tput_ref = cfg.frequency.channels_for("downlink") * _shannon_mbps(snr_ref, bw)
 
     snr, fspl, atmos, iono = _snr_db(rng_k, elev_k, cfg, freq)
-    tput = _shannon_mbps(snr, bw)
+    tput = cfg.frequency.channels_for("downlink") * _shannon_mbps(snr, bw)
     total = fspl + atmos + iono + cfg.losses.implementation_loss_db + cfg.losses.rain_margin_db
     nan = np.nan
 

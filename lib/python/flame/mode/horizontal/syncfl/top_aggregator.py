@@ -320,6 +320,40 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
         )
         return max(int(elapsed_s), 0)
 
+    def _link_invisible_ends(self, channel) -> set:
+        """Ends whose satellite is not visible to the ground station now, when
+        linkLayer.routing == "direct" and linkLayer.direct.visibleOnly is set.
+        Empty set otherwise. A satellite index comes from the end's first reply
+        when known, else from the trainer registry (task_id -> trainer_id - 1), so
+        the filter applies from the first selection. Ends with neither stay eligible."""
+        rt = self.link_runtime_uplink
+        if rt is None or rt.cfg.routing != "direct" or not rt.cfg.direct.visible_only:
+            return set()
+        from flame.link.visibility import (
+            invisible_ends,
+            registry_satellite_map,
+            visibility_matrix,
+        )
+
+        if getattr(self, "_link_registry_sat", None) is None:
+            self._link_registry_sat = registry_satellite_map(rt.cfg.trainer_registry_path)
+        if getattr(self, "_link_visible", None) is None:  # geometry only; computed once
+            self._link_visible = visibility_matrix(rt.ecef_km, rt.cfg)
+
+        def sat_index_of(end):
+            idx = channel.get_end_property(end, PROP_SATELLITE_INDEX)
+            return idx if idx is not None else self._link_registry_sat.get(end)
+
+        ts = self._link_timestep_now()
+        hidden = invisible_ends(self._link_visible, channel._ends.keys(), sat_index_of, ts)
+        unmapped = sum(1 for e in channel._ends if sat_index_of(e) is None)
+        if hidden or unmapped:
+            logger.info(
+                f"[LINK_VISIBLE_ONLY] {len(hidden)}/{len(channel._ends)} ends not visible at t={ts}s "
+                f"({unmapped} with unknown satellite)"
+            )
+        return hidden
+
     def _link_extra(self, channel, end: str, runtime) -> Optional[dict]:
         """link_* telemetry fields for `end` via `runtime` (one of
         self.link_runtime_uplink/downlink), or None if the link layer is
@@ -1355,6 +1389,9 @@ class TopAggregator(ClientAvailability, Role, metaclass=ABCMeta):
             curr_unavail_trainer_list = []
             _wh = _ow = set()
         curr_unavail_trainer_list = list(set(curr_unavail_trainer_list) | self._extra_unavailable_trainers())
+        _invisible = self._link_invisible_ends(channel)
+        if _invisible:
+            curr_unavail_trainer_list = list(set(curr_unavail_trainer_list) | _invisible)
         channel.set_curr_unavailable_trainers(
             trainer_unavail_list=curr_unavail_trainer_list
         )

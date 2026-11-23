@@ -159,6 +159,8 @@ class ConfigGenerator:
         for k in ("compute_ms_per_sample", "bandwidth_kbps"):  # FX-D197: backprop task time = FedScale device model
             if k in trainer_meta:
                 config["hyperparameters"][k] = float(trainer_meta[k])
+        if "computation_time_ms" in trainer_meta:
+            config["hyperparameters"]["computation_time_ms"] = trainer_meta["computation_time_ms"]
         
         # Set training_delay_enabled from overrides (default True)
         training_delay_enabled = overrides.get("hyperparameters.training_delay_enabled", "True")

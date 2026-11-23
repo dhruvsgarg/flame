@@ -1,0 +1,60 @@
+# FMoW FedAvg (sync) smoke with link-layer delay: each round's modeled delay is
+# model download + compute + update upload, from the Svalbard RF link budget.
+# routing: direct waits for each satellite's next pass, so run in simulated time.
+#
+# Run:
+#   python -m flame.launch.run_experiment \
+#       lib/python/examples/fmow/exports/fmow_fedavg_linkdelay_smoke_n10.yaml
+
+experiments:
+  - name: fmow_fedavg_linkdelay_smoke_n10
+    description: "FMoW FedAvg sync smoke (10 trainers) with link-layer comm delay (direct routing)."
+
+    baseline: fedavg
+
+    trainer:
+      num_trainers: 10
+      start_id: 1
+      dataset:
+        path_style: true
+      availability:
+        mode: syn_0
+      enable_training_delays: true
+      time_mode: simulated
+      hyperparameters:
+        batchSize: 16
+        learningRate: 0.0001
+        linkLayer:
+          enabled: true
+          affectsDelay: true
+          routing: direct
+          satelliteEcefPath: "lib/python/examples/fmow/metadata/leo/ecef.npz"
+
+    aggregator:
+      config_template: metadata/aggregator_base.json
+      selector: random
+      tracking_mode: default
+      agg_goal: 5
+      log_to_wandb: false
+      config_overrides:
+        job:
+          id: fmow_fedavg_linkdelay_smoke_n10
+        hyperparameters:
+          batchSize: 16
+          learningRate: 0.0001
+          rounds: 50
+          fmow_config_path: "lib/python/examples/fmow/configs/fmow_config.yaml"
+          linkLayer:
+            enabled: true
+            satelliteEcefPath: "lib/python/examples/fmow/metadata/leo/ecef.npz"
+        selector:
+          kwargs:
+            k: 5
+            c: 5
+
+    execution:
+      num_gpus: 2
+      sleep_between_spawns: 1.0
+      aggregator_warmup_time: 15
+      monitoring:
+        enabled: false

@@ -1856,6 +1856,9 @@ class TopAggregator(SyncTopAgg):
         curr_unavail_trainer_list = list(
             set(curr_unavail_trainer_list) | self._extra_unavailable_trainers()
         )
+        _invisible = self._link_invisible_ends(channel)  # linkLayer.direct.visibleOnly
+        if _invisible:
+            curr_unavail_trainer_list = list(set(curr_unavail_trainer_list) | _invisible)
         channel.set_curr_unavailable_trainers(
             trainer_unavail_list=curr_unavail_trainer_list
         )

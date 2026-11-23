@@ -1,0 +1,57 @@
+experiments:
+- name: fmow_fedavg_isl_realtime3h_waitall_n10
+  description: FMoW FedAvg sync, isl routing, 3 h real-time (no speed-up), wait for all 5.
+  baseline: fedavg
+  trainer:
+    num_trainers: 10
+    start_id: 1
+    dataset:
+      path_style: true
+    availability:
+      mode: syn_0
+    enable_training_delays: true
+    time_mode: real
+    hyperparameters:
+      batchSize: 16
+      learningRate: 0.0001
+      linkLayer:
+        enabled: true
+        affectsDelay: true
+        routing: isl
+        satelliteEcefPath: lib/python/examples/fmow/metadata/leo/ecef.npz
+        isl:
+          throughputMbps: 2500
+          gatewaySelection: best_rate
+          latencyPath: lib/python/examples/fmow/metadata/leo/latency.npz
+  aggregator:
+    config_template: metadata/aggregator_base.json
+    selector: random
+    tracking_mode: default
+    agg_goal: 5
+    log_to_wandb: false
+    config_overrides:
+      job:
+        id: fmow_fedavg_isl_realtime3h_waitall_n10
+      hyperparameters:
+        batchSize: 16
+        learningRate: 0.0001
+        rounds: 5000
+        fmow_config_path: lib/python/examples/fmow/configs/fmow_config.yaml
+        linkLayer:
+          enabled: true
+          satelliteEcefPath: lib/python/examples/fmow/metadata/leo/ecef.npz
+        max_experiment_runtime_s: 10800
+        trainer_recv_wall_timeout_s: 10800
+        send_timeout_wait_s: 10800
+        evalEveryNRounds: 25
+        eval_every_n_commits: 1
+      selector:
+        kwargs:
+          k: 5
+          c: 5
+  execution:
+    num_gpus: 1
+    sleep_between_spawns: 1.0
+    aggregator_warmup_time: 30
+    monitoring:
+      enabled: false

@@ -1,0 +1,63 @@
+# FMoW FedAvg sync, 200 trainers, 3 h real-time: direct routing, no visible-only selection.
+# All three n200 arms (baseline / direct / isl) are identical except the
+# experiment name and the linkLayer blocks.
+experiments:
+- name: fmow_fedavg_direct_n200
+  description: FMoW FedAvg sync, 200 trainers, 3 h real-time, direct routing, no visible-only selection.
+  baseline: fedavg
+  trainer:
+    num_trainers: 200
+    start_id: 1
+    dataset:
+      path_style: true
+    availability:
+      mode: syn_0
+    enable_training_delays: true
+    time_mode: real
+    hyperparameters:
+      batchSize: 16
+      learningRate: 0.0001
+      linkLayer:
+        enabled: true
+        affectsDelay: true
+        routing: direct
+        transfer:
+          unreachableCommS: 86400
+        satelliteEcefPath: lib/python/examples/fmow/metadata/leo/ecef.npz
+  aggregator:
+    config_template: metadata/aggregator_base.json
+    selector: random
+    tracking_mode: default
+    agg_goal: 3
+    log_to_wandb: false
+    config_overrides:
+      job:
+        id: fmow_fedavg_direct_n200
+      hyperparameters:
+        batchSize: 16
+        learningRate: 0.0001
+        seed: 1234
+        rounds: 100000
+        fmow_config_path: lib/python/examples/fmow/configs/fmow_config.yaml
+        max_experiment_runtime_s: 10800
+        evalEveryNRounds: 10
+        eval_max_samples: 3000
+        eval_every_n_commits: 1
+        min_trainers_to_start: 200
+        min_trainers_join_timeout_s: 600
+        linkLayer:
+          enabled: true
+          routing: direct
+          direct:
+            visibleOnly: false
+          satelliteEcefPath: lib/python/examples/fmow/metadata/leo/ecef.npz
+      selector:
+        kwargs:
+          k: 3
+          c: 3
+  execution:
+    num_gpus: 4
+    sleep_between_spawns: 0.3
+    aggregator_warmup_time: 30
+    monitoring:
+      enabled: false
