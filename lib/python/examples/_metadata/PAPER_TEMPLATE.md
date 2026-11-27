@@ -4,7 +4,7 @@
 papers do well: Oort (OSDI'21), REFL (EuroSys'23), FedBuff (AISTATS'22), FwdLLM (ATC'24), FLINT (MLSys'23) and FedDance
 (SoCC'25). Part B turns that into a section-by-section template: purpose, dos, don'ts, arguments, data, citations, figures,
 math, experiments, plus a prompt for turning an outline into prose (B.20). Each paper's authors use Parts A and B to write their own paper-specific markdown (Felix: [felix_paper_outline.md](felix_paper_outline.md);
-FluxTune: [fluxtune_paper_outline.md](fluxtune_paper_outline.md)). Parts C and D keep each paper's pending items. Part E holds rules both papers share, and Part F the open items.
+FluxTune: [fluxtune_paper_outline.md](../../../../fluxtune_paper_outline.md)). Parts C and D keep each paper's pending items. Part E holds rules both papers share, and Part F the open items.
 
 **Owners.** Felix: Dhruv. FluxTune: Aish (with Dhruv).
 
@@ -539,7 +539,7 @@ telemetry, the launcher and `baselines.yaml` wiring. Speech was added the same w
 
 ## Part D — FluxTune (pending items only)
 
-FluxTune's narrative, names, evidence pointers and limits live in [fluxtune_paper_outline.md](fluxtune_paper_outline.md). Pending:
+FluxTune's narrative, names, evidence pointers and limits live in [fluxtune_paper_outline.md](../../../../fluxtune_paper_outline.md). Pending:
 
 1. **Second forward-only baseline** (MeZO-style ZO-SGD in FL) so each gap's generality rests on more than FwdLLM data (writing
    rules §1); not in RUN_PLAN yet.
@@ -578,7 +578,7 @@ FluxTune's narrative, names, evidence pointers and limits live in [fluxtune_pape
 
 ## Part F — Open items
 
-1. **FluxTune:** title and whether async counts as a concept ([fluxtune_paper_outline.md](fluxtune_paper_outline.md) §0).
+1. **FluxTune:** title and whether async counts as a concept ([fluxtune_paper_outline.md](../../../../fluxtune_paper_outline.md) §0).
 2. **Felix third workload:** confirm Reddit + ALBERT (C.1), and whether the SmolLM2 + LoRA variant is in budget.
 3. **Real-device measurement:** a small on-phone measurement (Felix: notify / check-in cost; FluxTune: forward-pass time on an NPU)
    would close the most common systems-venue objection; decide per paper.
